@@ -166,6 +166,33 @@ pub fn set_launch_at_login(enabled: bool) -> Result<(), String> {
     auto_launch::set(enabled)
 }
 
+fn validate_extra_root_source(source: &str) -> Result<(), String> {
+    match source {
+        "codex" | "grok" | "antigravity" => Ok(()),
+        _ => Err("不支持的数据源".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_extra_roots(app: AppHandle) -> Result<Value, String> {
+    let output = sync_engine::run_config_command(&app, &["config", "roots"]).await?;
+    serde_json::from_str(&output).map_err(|e| format!("无法读取隔离运行时目录: {e}"))
+}
+
+#[tauri::command]
+pub async fn add_extra_root(app: AppHandle, source: String, path: String) -> Result<(), String> {
+    validate_extra_root_source(&source)?;
+    sync_engine::run_config_command(&app, &["config", "add-root", &source, &path]).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_extra_root(app: AppHandle, source: String, path: String) -> Result<(), String> {
+    validate_extra_root_source(&source)?;
+    sync_engine::run_config_command(&app, &["config", "remove-root", &source, &path]).await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn reset_config(app: AppHandle) -> Result<(), String> {
     scheduler::stop(&app);
@@ -251,4 +278,17 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, Stri
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     updater::install(&app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_extra_root_source;
+
+    #[test]
+    fn extra_root_sources_are_allowlisted() {
+        assert!(validate_extra_root_source("codex").is_ok());
+        assert!(validate_extra_root_source("grok").is_ok());
+        assert!(validate_extra_root_source("antigravity").is_ok());
+        assert!(validate_extra_root_source("cursor").is_err());
+    }
 }

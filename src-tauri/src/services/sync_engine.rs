@@ -50,6 +50,69 @@ pub fn node_for_statusline(app: &AppHandle) -> PathBuf {
     }
 }
 
+fn cli_command(app: &AppHandle, args: &[&str]) -> Result<tokio::process::Command, String> {
+    let cli = cli_entry(app).ok_or("未找到内置 CLI 资源")?;
+    let rt = detect_runtime(app).ok_or("未检测到可用的 Node.js 运行时，请安装 Node.js 22+")?;
+    let cli_dir = cli.parent().ok_or("内置 CLI 路径无效")?;
+    let cli_file = cli.file_name().ok_or("内置 CLI 路径无效")?;
+
+    let mut cmd = tokio::process::Command::new(&rt.path);
+    cmd.current_dir(cli_dir)
+        .arg(cli_file)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if let Some(dir) = rt.path.parent() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}{sep}{path}", dir.display()));
+    }
+    cmd.env(
+        "VIBE_USAGE_CONFIG_DIR",
+        app.state::<AppCtx>().config.config_dir.clone(),
+    );
+    cmd.env("VIBE_USAGE_SURFACE", "windows-app");
+    cmd.env(
+        "VIBE_USAGE_SURFACE_VERSION",
+        app.package_info().version.to_string(),
+    );
+    if crate::state::IS_DEV {
+        cmd.env("VIBE_USAGE_DEV", "1");
+    }
+    if std::env::var("HTTPS_PROXY").is_err() && std::env::var("https_proxy").is_err() {
+        if let Some(proxy) = process_utils::system_proxy_url() {
+            cmd.env("HTTPS_PROXY", &proxy);
+            cmd.env("HTTP_PROXY", &proxy);
+        }
+    }
+    cmd.env("NODE_USE_ENV_PROXY", "1");
+    process_utils::hide_tokio_command_window(&mut cmd);
+    Ok(cmd)
+}
+
+/// Run a short config command against the same bundled CLI and config directory
+/// used by sync.
+pub async fn run_config_command(app: &AppHandle, args: &[&str]) -> Result<String, String> {
+    let output = tokio::time::timeout(Duration::from_secs(30), cli_command(app, args)?.output())
+        .await
+        .map_err(|_| "CLI 配置操作超时".to_string())?
+        .map_err(|e| format!("CLI 配置操作失败: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = extract_error_line(&stderr);
+    Err(if message.is_empty() {
+        format!("CLI 配置操作失败: Exit code {}", output.status.code().unwrap_or(-1))
+    } else {
+        message
+    })
+}
+
 fn set_state(app: &AppHandle, update: impl FnOnce(&mut SyncState)) {
     let ctx = app.state::<crate::state::AppCtx>();
     let snapshot = {
@@ -117,60 +180,7 @@ pub async fn run_sync(app: AppHandle) {
 }
 
 async fn run_cli_sync(app: &AppHandle) -> Result<String, String> {
-    let Some(cli) = cli_entry(app) else {
-        return Err("同步失败: 未找到内置 CLI 资源".into());
-    };
-    let Some(rt) = detect_runtime(app) else {
-        return Err("未检测到可用的 Node.js 运行时，请安装 Node.js 22+".into());
-    };
-    let Some(cli_dir) = cli.parent() else {
-        return Err("同步失败: 内置 CLI 路径无效".into());
-    };
-    let Some(cli_file) = cli.file_name() else {
-        return Err("同步失败: 内置 CLI 路径无效".into());
-    };
-    log::info!("sync via {:?} {}", rt.kind, rt.path.display());
-
-    let mut cmd = tokio::process::Command::new(&rt.path);
-    cmd.current_dir(cli_dir)
-        .arg(cli_file)
-        .arg("sync")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    // Ensure the runtime's directory is in PATH (mirrors SyncEngine).
-    if let Some(dir) = rt.path.parent() {
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let path = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("{}{sep}{path}", dir.display()));
-    }
-    cmd.env(
-        "VIBE_USAGE_CONFIG_DIR",
-        app.state::<AppCtx>().config.config_dir.clone(),
-    );
-    cmd.env("VIBE_USAGE_SURFACE", "windows-app");
-    cmd.env(
-        "VIBE_USAGE_SURFACE_VERSION",
-        app.package_info().version.to_string(),
-    );
-    if crate::state::IS_DEV {
-        cmd.env("VIBE_USAGE_DEV", "1");
-    }
-    // Node's fetch() ignores the Windows system proxy (macOS URLSession honors
-    // it implicitly — this is why the macOS app never hit the issue). Bridge
-    // the registry proxy into env vars; NODE_USE_ENV_PROXY makes Node ≥22.15
-    // route global fetch through them.
-    if std::env::var("HTTPS_PROXY").is_err() && std::env::var("https_proxy").is_err() {
-        if let Some(proxy) = process_utils::system_proxy_url() {
-            log::info!("bridging system proxy to CLI: {proxy}");
-            cmd.env("HTTPS_PROXY", &proxy);
-            cmd.env("HTTP_PROXY", &proxy);
-        }
-    }
-    cmd.env("NODE_USE_ENV_PROXY", "1");
-    process_utils::hide_tokio_command_window(&mut cmd);
+    let mut cmd = cli_command(app, &["sync"]).map_err(|e| format!("同步失败: {e}"))?;
 
     let mut child = cmd.spawn().map_err(|e| format!("同步失败: {e}"))?;
     let stdout_pipe = child.stdout.take();

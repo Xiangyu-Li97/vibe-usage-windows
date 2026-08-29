@@ -7,7 +7,10 @@ import {
 import { ingest, fetchSettings } from './api.js';
 import { createSyncClient, forBatch } from './client-meta.js';
 import { parsers } from './parsers/index.js';
-import { success, failure, arrow, link, dim } from './output.js';
+import { aggregateToBuckets } from './parsers/aggregate.js';
+import { normalizeParserResult } from './parsers/contract.js';
+import { extraRootList } from './extra-roots.js';
+import { success, failure, warn, arrow, link, dim } from './output.js';
 
 const BATCH_SIZE = 100;
 const SESSION_BATCH_SIZE = 500;
@@ -27,8 +30,46 @@ export function resolveUploadProjectSetting(settings) {
   return settings.uploadProject;
 }
 
+export function resolveCachedUploadProjectSetting(config, apiUrl) {
+  if (config?.lastUploadProjectApiUrl !== apiUrl) return undefined;
+  return typeof config.lastUploadProject === 'boolean'
+    ? config.lastUploadProject
+    : undefined;
+}
+
 export function resolveCodexExtraHome(configured, temporary) {
   return temporary ?? configured;
+}
+
+// Hiding project names can collapse multiple parser buckets onto one server
+// identity. Merge those buckets before hashing/uploading so no project's usage
+// wins by iteration order.
+export function reaggregateHiddenProjectBuckets(buckets) {
+  return aggregateToBuckets(buckets.map(bucket => ({
+    ...bucket,
+    timestamp: new Date(bucket.bucketStart),
+  })));
+}
+
+// Parser execution is I/O bound (log reads, occasional network calls). Run a
+// bounded number at once to cut wall-clock sync time without the memory spike
+// of loading every tool's logs simultaneously.
+export const PARSER_CONCURRENCY = 4;
+
+// Run `fn` over `items` with at most `limit` in flight, preserving order.
+export async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 export async function runSync({
@@ -60,17 +101,37 @@ export async function runSync({
   try {
     const settings = await fetchSettings(apiUrl, config.apiKey);
     uploadProject = resolveUploadProjectSetting(settings);
+    // Scope the cached privacy choice to the server that returned it. Reusing
+    // the value after `apiUrl` changes could expose project names to a
+    // different server during its first settings outage.
+    if (
+      config.lastUploadProject !== uploadProject
+      || config.lastUploadProjectApiUrl !== apiUrl
+    ) {
+      config.lastUploadProject = uploadProject;
+      config.lastUploadProjectApiUrl = apiUrl;
+      saveConfig(config);
+    }
   } catch (err) {
     if (err.message === 'UNAUTHORIZED') {
       console.error(failure('API Key 无效，请运行 `npx @vibe-cafe/vibe-usage init` 重新配置。'));
+      if (throws) throw err;
+      process.exit(1);
+    }
+    // Settings endpoint unreachable (not auth): degrade to the last confirmed
+    // choice for this same server rather than hard-aborting every upload.
+    const cachedUploadProject = resolveCachedUploadProjectSetting(config, apiUrl);
+    if (typeof cachedUploadProject === 'boolean') {
+      uploadProject = cachedUploadProject;
+      if (!quiet) console.log(warn('设置接口不可用，沿用上次的项目名设置。'));
     } else {
       console.error(failure('暂时无法读取上传设置，本次同步已安全取消（未上传数据）。请稍后重试。'));
+      if (throws) throw err;
+      process.exit(1);
     }
-    if (throws) throw err;
-    process.exit(1);
   }
 
-  const allBuckets = [];
+  let allBuckets = [];
   const allSessions = [];
   const parserResults = [];
   const parserProgress = [];
@@ -79,36 +140,55 @@ export async function runSync({
   // state and force a full re-upload next run.
   const okSources = new Set();
 
-  for (const [source, parse] of Object.entries(parsers)) {
-    try {
-      const result = source === 'codex'
-        ? await parse({ codexExtraHome: resolveCodexExtraHome(config.codexExtraHome, codexExtraHome) })
-        : await parse();
-      const buckets = Array.isArray(result) ? result : result.buckets;
-      const sessions = Array.isArray(result) ? [] : (result.sessions || []);
-      if (!Array.isArray(buckets) || !Array.isArray(sessions)) {
-        throw new TypeError('Parser returned an invalid result');
+  // Run parsers concurrently (bounded) so one slow parser (Cursor's network
+  // fetch, a cold Codex index) can't stall the rest. Results are collected in
+  // registry order so output and merged arrays stay deterministic.
+  const parserOutcomes = await mapWithConcurrency(
+    Object.entries(parsers),
+    PARSER_CONCURRENCY,
+    async ([source, parse]) => {
+      try {
+        const result = await parse({
+          extraRoots: extraRootList(config.extraRoots?.[source]),
+          ...(source === 'codex' ? {
+            codexExtraHome: resolveCodexExtraHome(config.codexExtraHome, codexExtraHome),
+          } : {}),
+        });
+        return { source, result };
+      } catch (err) {
+        return { source, error: err };
       }
-      if (result?.indexing) {
-        parserProgress.push({ source, ...result.indexing });
-      }
-      if (Array.isArray(result?.warnings)) {
-        for (const message of result.warnings) {
-          process.stderr.write(`${dim(`  ${message}`)}\n`);
-        }
-      }
-      // A parser may deliberately suppress a transient error (Cursor network
-      // timeout) to keep daemon logs quiet. Its empty result is not proof that
-      // its prior data disappeared, so it must not be pruned this run.
-      if (!result?.skipped) okSources.add(source);
-      if (buckets.length > 0) allBuckets.push(...buckets);
-      if (sessions.length > 0) allSessions.push(...sessions);
-      if (buckets.length > 0 || sessions.length > 0) {
-        parserResults.push({ source, buckets: buckets.length, sessions: sessions.length });
-      }
-    } catch (err) {
+    },
+  );
+
+  for (const { source, result, error } of parserOutcomes) {
+    if (error) {
       // Parser errors are non-fatal — pass-through in dim gray (no translation).
+      process.stderr.write(`${dim(`  ${source}: ${error.message}`)}\n`);
+      continue;
+    }
+    let normalized;
+    try {
+      normalized = normalizeParserResult(source, result);
+    } catch (err) {
       process.stderr.write(`${dim(`  ${source}: ${err.message}`)}\n`);
+      continue;
+    }
+    const { buckets, sessions, skipped, warnings, indexing } = normalized;
+    if (indexing) {
+      parserProgress.push({ source, ...indexing });
+    }
+    for (const message of warnings) {
+      process.stderr.write(`${dim(`  ${message}`)}\n`);
+    }
+    // A parser may deliberately suppress a transient error (Cursor network
+    // timeout) to keep daemon logs quiet. Its empty result is not proof that
+    // its prior data disappeared, so it must not be pruned this run.
+    if (!skipped) okSources.add(source);
+    for (const bucket of buckets) allBuckets.push(bucket);
+    for (const session of sessions) allSessions.push(session);
+    if (buckets.length > 0 || sessions.length > 0) {
+      parserResults.push({ source, buckets: buckets.length, sessions: sessions.length });
     }
   }
 
@@ -166,6 +246,7 @@ export async function runSync({
   if (!uploadProject) {
     for (const b of allBuckets) b.project = 'unknown';
     for (const s of allSessions) s.project = 'unknown';
+    allBuckets = reaggregateHiddenProjectBuckets(allBuckets);
   }
 
   // Incremental upload diff: parsers above emit a complete view of live local
@@ -260,10 +341,10 @@ export async function runSync({
       }
       totalProtectedBuckets += Number(result.protected?.buckets) || 0;
 
-      // Commit only this batch's hashes, only after it uploaded successfully.
-      // A batch that throws aborts the loop with its keys still absent from
-      // state, so the next sync re-sends exactly those items — no data loss,
-      // no silent gaps.
+      // Commit only hashes from this successful batch. Persist before starting
+      // the next batch: if a later upload fails or the process exits abruptly,
+      // the next sync retries only the uncommitted suffix.
+      let batchStateChanged = false;
       for (const b of batch) {
         // A source unknown to an older backend may become valid after deploy.
         // Leave those hashes uncommitted so the next sync retries them instead
@@ -271,14 +352,20 @@ export async function runSync({
         if (batchUnknownSources.has(b.source)) continue;
         const key = bucketKey(b);
         const entry = pendingBucketState.get(key);
-        if (entry) state.buckets[key] = entry;
+        if (entry) {
+          state.buckets[key] = entry;
+          batchStateChanged = true;
+        }
       }
       for (const s of batchSessions) {
         const key = sessionKey(s);
         const entry = pendingSessionState.get(key);
-        if (entry) state.sessions[key] = entry;
+        if (entry) {
+          state.sessions[key] = entry;
+          batchStateChanged = true;
+        }
       }
-      saveState(state);
+      if (batchStateChanged) saveState(state);
     }
 
     if (totalBatches > 1 || allBucketsToSend.length > 0) {

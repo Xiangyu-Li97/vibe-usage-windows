@@ -22,6 +22,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(AppCtx::new(app_config_dir))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Second launch → surface the main window.
             panel::show(app);
@@ -80,6 +81,9 @@ pub fn run() {
             commands::set_settings,
             commands::get_launch_at_login,
             commands::set_launch_at_login,
+            commands::get_extra_roots,
+            commands::add_extra_root,
+            commands::remove_extra_root,
             commands::reset_config,
             commands::open_external,
             commands::open_settings_window,

@@ -1,7 +1,15 @@
 import { createReadStream, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, basename, sep } from 'node:path';
-import { aggregateToBuckets, extractSessions } from './index.js';
+import {
+  accumulateSessionEvent,
+  aggregateToBuckets,
+  createSessionAccumulator,
+  extractSessions,
+  finalizeSessionAccumulator,
+  sessionAccumulatorIsOrdered,
+} from './aggregate.js';
+import { projectFromCwd, toCount } from './fs-utils.js';
 import { getClaudeRoots } from '../claude-roots.js';
 
 const MAX_WARNINGS = 20;
@@ -27,7 +35,7 @@ function findJsonlFiles(dir, ctx) {
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...findJsonlFiles(fullPath, ctx));
+      for (const nested of findJsonlFiles(fullPath, ctx)) results.push(nested);
     } else if (entry.name.endsWith('.jsonl')) {
       results.push(fullPath);
     }
@@ -47,19 +55,6 @@ function projectFromRelative(relative) {
   if (!firstSegment) return 'unknown';
   const parts = firstSegment.split('-').filter(Boolean);
   return parts.at(-1) || 'unknown';
-}
-
-/** Works for Unix and Windows cwd values regardless of the current OS. */
-function projectFromCwd(cwd, fallback) {
-  if (typeof cwd !== 'string') return fallback;
-  const trimmed = cwd.trim().replace(/[\\/]+$/, '');
-  if (!trimmed) return fallback;
-  return trimmed.split(/[\\/]/).filter(Boolean).at(-1) || fallback;
-}
-
-function toCount(value) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function cacheCreationTokens(usage) {
@@ -167,10 +162,46 @@ function timingEvent(obj, sessionId, project) {
     role: obj.type === 'user' ? 'user' : 'assistant',
   };
 }
+async function collectTimingEvents(candidate, projectForObject) {
+  const events = [];
+  await readJsonl(candidate, (obj) => {
+    const event = timingEvent(
+      obj,
+      candidate.sessionId,
+      projectForObject(obj),
+    );
+    if (event) events.push(event);
+  });
+  return events;
+}
+
+async function finalizeCandidateSession(
+  candidate,
+  accumulator,
+  projectForObject,
+  projectOverride,
+) {
+  if (sessionAccumulatorIsOrdered(accumulator)) {
+    return finalizeSessionAccumulator(
+      accumulator,
+      candidate.sessionId,
+      projectOverride,
+    );
+  }
+
+  // JSONL is normally append-ordered. Preserve the old sort semantics for an
+  // unusual copied/rewritten file without retaining every event on the common
+  // path: re-read only that candidate and let extractSessions() sort it.
+  const events = await collectTimingEvents(candidate, projectForObject);
+  return extractSessions(events)[0] || null;
+}
 
 async function scanProjectCandidate(candidate) {
-  const entries = [];
-  const events = [];
+  const usageEntries = {
+    entriesByKey: new Map(),
+    anonymousEntries: [],
+  };
+  const sessionAccumulator = createSessionAccumulator();
   let lastModel = null;
   let sessionProject = candidate.fallbackProject;
   let foundSessionCwd = false;
@@ -183,7 +214,7 @@ async function scanProjectCandidate(candidate) {
       foundSessionCwd = true;
     }
     const event = timingEvent(obj, candidate.sessionId, sessionProject);
-    if (event) events.push(event);
+    if (event) accumulateSessionEvent(sessionAccumulator, event);
 
     if (obj.type !== 'assistant' || !obj.message?.usage || !obj.timestamp) return;
     const timestamp = new Date(obj.timestamp);
@@ -206,8 +237,8 @@ async function scanProjectCandidate(candidate) {
     // inflate the CLI's bucket count with rows the server will discard anyway.
     if (usageScore === 0) return;
 
-    entries.push({
-      uuid: typeof obj.uuid === 'string' && obj.uuid ? obj.uuid : null,
+    mergeUsageEntry(usageEntries, {
+      dedupeKey: usageDedupeKey(obj),
       usageScore,
       source: 'claude-code',
       model,
@@ -222,22 +253,34 @@ async function scanProjectCandidate(candidate) {
 
   // A cwd can appear after initial metadata/messages. Normalize the completed
   // session in one place so early records receive the same project label.
-  for (const entry of entries) entry.project = sessionProject;
-  for (const event of events) event.project = sessionProject;
-  return { entries, events };
+  for (const entry of usageEntries.anonymousEntries) entry.project = sessionProject;
+  for (const entry of usageEntries.entriesByKey.values()) entry.project = sessionProject;
+  const session = await finalizeCandidateSession(
+    candidate,
+    sessionAccumulator,
+    () => sessionProject,
+    sessionProject,
+  );
+  return { usageEntries, session };
 }
 
 async function scanTranscriptCandidate(candidate) {
-  const events = [];
+  const sessionAccumulator = createSessionAccumulator();
+  const projectForObject = (obj) => projectFromCwd(obj.cwd, 'unknown');
   await readJsonl(candidate, (obj) => {
     const event = timingEvent(
       obj,
       candidate.sessionId,
-      projectFromCwd(obj.cwd, 'unknown'),
+      projectForObject(obj),
     );
-    if (event) events.push(event);
+    if (event) accumulateSessionEvent(sessionAccumulator, event);
   });
-  return { entries: [], events };
+  const session = await finalizeCandidateSession(
+    candidate,
+    sessionAccumulator,
+    projectForObject,
+  );
+  return { session };
 }
 
 async function scanBestCandidate(candidates, scanner, ctx) {
@@ -251,24 +294,48 @@ async function scanBestCandidate(candidates, scanner, ctx) {
   return null;
 }
 
+// One API call is written as several assistant lines - one per content block -
+// that share `message.id`/`requestId` and repeat the same `usage` object, so a
+// per-line key counts the same call once per block. Streaming also emits an
+// early partial line (lower `output_tokens`) before the final one under that
+// same id. Keying on the call identity collapses both, and the existing
+// highest-usageScore wins rule then keeps the final, complete payload.
+// Records without either id (older logs) fall back to the line uuid.
+function usageDedupeKey(obj) {
+  const messageId = typeof obj.message?.id === 'string' ? obj.message.id.trim() : '';
+  const requestId = typeof obj.requestId === 'string' ? obj.requestId.trim() : '';
+  if (messageId || requestId) return `call:${messageId}\u0000${requestId}`;
+  return typeof obj.uuid === 'string' && obj.uuid ? obj.uuid : null;
+}
+
 function mergeUsageEntry(ctx, entry) {
-  if (!entry.uuid) {
+  if (!entry.dedupeKey) {
     ctx.anonymousEntries.push(entry);
     return;
   }
-  const current = ctx.entriesByUuid.get(entry.uuid);
-  // Claude sometimes copies the same UUID into another session with zeroed
+  const current = ctx.entriesByKey.get(entry.dedupeKey);
+  // Claude sometimes copies the same record into another session with zeroed
   // usage. Keep the most complete payload, independent of directory order.
   if (!current || entry.usageScore > current.usageScore) {
-    ctx.entriesByUuid.set(entry.uuid, entry);
+    ctx.entriesByKey.set(entry.dedupeKey, entry);
   }
+}
+
+function mergeUsageEntries(target, source) {
+  for (const entry of source.anonymousEntries) mergeUsageEntry(target, entry);
+  for (const entry of source.entriesByKey.values()) mergeUsageEntry(target, entry);
+}
+
+function* iterateUsageEntries(ctx) {
+  for (const entry of ctx.anonymousEntries) yield entry;
+  for (const entry of ctx.entriesByKey.values()) yield entry;
 }
 
 export async function parse() {
   const ctx = {
-    entriesByUuid: new Map(),
+    entriesByKey: new Map(),
     anonymousEntries: [],
-    sessionEvents: [],
+    sessions: [],
     warnings: [],
     incomplete: false,
   };
@@ -282,25 +349,20 @@ export async function parse() {
     const parsed = await scanBestCandidate(candidates, scanProjectCandidate, ctx);
     if (!parsed) continue;
     projectSessionIds.add(sessionId);
-    ctx.sessionEvents.push(...parsed.events);
-    for (const entry of parsed.entries) mergeUsageEntry(ctx, entry);
+    if (parsed.session) ctx.sessions.push(parsed.session);
+    mergeUsageEntries(ctx, parsed.usageEntries);
   }
 
   const transcriptGroups = collectCandidates(roots, 'transcripts', ctx);
   for (const [sessionId, candidates] of transcriptGroups) {
     if (projectSessionIds.has(sessionId)) continue;
     const parsed = await scanBestCandidate(candidates, scanTranscriptCandidate, ctx);
-    if (parsed) ctx.sessionEvents.push(...parsed.events);
+    if (parsed?.session) ctx.sessions.push(parsed.session);
   }
 
-  const entries = [
-    ...ctx.anonymousEntries,
-    ...ctx.entriesByUuid.values(),
-  ].map(({ uuid: _uuid, usageScore: _usageScore, ...entry }) => entry);
-
   return {
-    buckets: aggregateToBuckets(entries),
-    sessions: extractSessions(ctx.sessionEvents),
+    buckets: aggregateToBuckets(iterateUsageEntries(ctx)),
+    sessions: ctx.sessions,
     ...(ctx.incomplete ? { skipped: true } : {}),
     ...(ctx.warnings.length > 0 ? { warnings: ctx.warnings } : {}),
   };

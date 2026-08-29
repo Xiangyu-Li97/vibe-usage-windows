@@ -5,6 +5,7 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import {
   AppSettings,
   AppStatus,
+  ExtraRoots,
   ProviderRateLimit,
   SyncState,
   UpdateInfo,
@@ -37,6 +38,11 @@ export const api = {
   setSettings: (settings: AppSettings) => invoke<void>("set_settings", { settings }),
   getLaunchAtLogin: () => invoke<boolean>("get_launch_at_login"),
   setLaunchAtLogin: (enabled: boolean) => invoke<void>("set_launch_at_login", { enabled }),
+  getExtraRoots: () => invoke<ExtraRoots>("get_extra_roots"),
+  addExtraRoot: (source: string, path: string) =>
+    invoke<void>("add_extra_root", { source, path }),
+  removeExtraRoot: (source: string, path: string) =>
+    invoke<void>("remove_extra_root", { source, path }),
   resetConfig: () => invoke<void>("reset_config"),
 
   // Windows / shell -------------------------------------------------------------
