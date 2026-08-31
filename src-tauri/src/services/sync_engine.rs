@@ -7,6 +7,7 @@ use crate::process_utils;
 use crate::state::{AppCtx, SyncState, SyncStatus};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use vibe_core::runtime::{self, Runtime, RuntimeKind};
@@ -131,14 +132,59 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Run one sync. Concurrent calls return immediately (同步已在进行中).
-pub async fn run_sync(app: AppHandle) {
-    let ctx = app.state::<AppCtx>();
-
-    let Ok(_guard) = ctx.sync_running.try_lock() else {
-        log::info!("sync already running");
-        return;
+/// Request work that must not be dropped if another run is already in flight.
+/// Overlapping callers coalesce into a single follow-up after the in-flight
+/// run finishes (so a post-config sync still executes).
+pub async fn run_with_follow_up<F, Fut>(
+    running: &tokio::sync::Mutex<()>,
+    pending: &AtomicBool,
+    work: F,
+) where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    pending.store(true, Ordering::SeqCst);
+    let mut guard = match running.try_lock() {
+        Ok(g) => Some(g),
+        Err(_) => {
+            log::info!("sync already running; queued follow-up");
+            return;
+        }
     };
+
+    loop {
+        pending.store(false, Ordering::SeqCst);
+        work().await;
+        if pending.load(Ordering::SeqCst) {
+            log::info!("running queued follow-up sync");
+            continue;
+        }
+        drop(guard.take());
+        if !pending.load(Ordering::SeqCst) {
+            return;
+        }
+        match running.try_lock() {
+            Ok(g) => guard = Some(g),
+            Err(_) => return,
+        }
+    }
+}
+
+/// Run one sync. Concurrent calls queue a follow-up instead of being dropped.
+pub async fn run_sync(app: AppHandle) {
+    let work_app = app.clone();
+    let ctx = app.state::<AppCtx>();
+    run_with_follow_up(&ctx.sync_running, &ctx.sync_pending, move || {
+        let app = work_app.clone();
+        async move {
+            run_sync_once(app).await;
+        }
+    })
+    .await;
+}
+
+async fn run_sync_once(app: AppHandle) {
+    let ctx = app.state::<AppCtx>();
 
     if !ctx.config.is_configured() {
         return;
@@ -303,4 +349,145 @@ fn write_sync_log(app: &AppHandle, status: &std::process::ExitStatus, stdout: &s
         let _ = f.write_all(entry.as_bytes());
     }
     log::debug!("sync exit={status:?}; log → {}", file.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_with_follow_up;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, Notify};
+
+    async fn wait_true(flag: &AtomicBool) {
+        let start = std::time::Instant::now();
+        while !flag.load(Ordering::SeqCst) {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "timed out waiting for queued follow-up flag"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn overlapping_sync_request_is_not_dropped() {
+        let running = Arc::new(Mutex::new(()));
+        let pending = Arc::new(AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+
+        let first = tokio::spawn({
+            let running = running.clone();
+            let pending = pending.clone();
+            let runs = runs.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || {
+                    let runs = runs.clone();
+                    let first_started = first_started.clone();
+                    let release_first = release_first.clone();
+                    async move {
+                        let n = runs.fetch_add(1, Ordering::SeqCst);
+                        if n == 0 {
+                            first_started.notify_waiters();
+                            release_first.notified().await;
+                        }
+                    }
+                })
+                .await;
+            }
+        });
+
+        first_started.notified().await;
+
+        let second = tokio::spawn({
+            let running = running.clone();
+            let pending = pending.clone();
+            let runs = runs.clone();
+            async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || {
+                    let runs = runs.clone();
+                    async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+                .await;
+            }
+        });
+
+        wait_true(pending.as_ref()).await;
+        release_first.notify_waiters();
+        first.await.unwrap();
+        second.await.unwrap();
+
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "in-flight sync plus the queued post-config request"
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_requests_coalesce_to_one_follow_up() {
+        let running = Arc::new(Mutex::new(()));
+        let pending = Arc::new(AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+
+        let first = tokio::spawn({
+            let running = running.clone();
+            let pending = pending.clone();
+            let runs = runs.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || {
+                    let runs = runs.clone();
+                    let first_started = first_started.clone();
+                    let release_first = release_first.clone();
+                    async move {
+                        let n = runs.fetch_add(1, Ordering::SeqCst);
+                        if n == 0 {
+                            first_started.notify_waiters();
+                            release_first.notified().await;
+                        }
+                    }
+                })
+                .await;
+            }
+        });
+
+        first_started.notified().await;
+
+        for _ in 0..3 {
+            let running = running.clone();
+            let pending = pending.clone();
+            tokio::spawn(async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || async {}).await;
+            });
+        }
+
+        wait_true(pending.as_ref()).await;
+        release_first.notify_waiters();
+        first.await.unwrap();
+
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn single_sync_request_runs_once() {
+        let running = Mutex::new(());
+        let pending = AtomicBool::new(false);
+        let runs = AtomicUsize::new(0);
+        run_with_follow_up(&running, &pending, || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            async {}
+        })
+        .await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(!pending.load(Ordering::SeqCst));
+    }
 }

@@ -6,6 +6,8 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, onDeviceLink, onSyncState } from "./lib/api";
+import { formatInvokeError } from "./lib/errors";
+import { extraRootsLoadPatch } from "./lib/extraRoots";
 import { AppSettings, AppStatus, ExtraRoots, SyncState } from "./lib/types";
 import { formatRelativeTime } from "./lib/formatters";
 
@@ -38,7 +40,11 @@ export function SettingsApp() {
     if (nextSettings.status === "fulfilled") setSettings(nextSettings.value);
     if (nextSyncState.status === "fulfilled") setSyncState(nextSyncState.value);
     if (nextAutoStart.status === "fulfilled") setAutoStart(nextAutoStart.value);
-    if (nextExtraRoots.status === "fulfilled") setExtraRoots(nextExtraRoots.value);
+    const extraPatch = extraRootsLoadPatch(nextExtraRoots);
+    if (extraPatch.extraRoots !== undefined) {
+      setExtraRoots(extraPatch.extraRoots);
+    }
+    setExtraRootsError(extraPatch.extraRootsError);
   }, []);
 
   useEffect(() => {
@@ -80,7 +86,7 @@ export function SettingsApp() {
       const { userCode } = await api.startDeviceLink();
       setRelinkUserCode(userCode);
     } catch (err) {
-      setRelinkError(`无法连接服务端：${String(err)}`);
+      setRelinkError(`无法连接服务端：${formatInvokeError(err)}`);
       setIsRelinking(false);
     }
   };
@@ -118,7 +124,7 @@ export function SettingsApp() {
       await reload();
     } catch (err) {
       setSettings({ ...settings, claudeRateLimitEnabled: false });
-      setQuotaError(String(err));
+      setQuotaError(formatInvokeError(err));
     }
   };
 
@@ -139,7 +145,7 @@ export function SettingsApp() {
       const info = await api.checkForUpdate();
       setUpdateMessage(info ? `发现新版本 ${info.version}` : "已是最新版本");
     } catch (err) {
-      setUpdateMessage(`检查失败: ${String(err)}`);
+      setUpdateMessage(`检查失败: ${formatInvokeError(err)}`);
     }
   };
 
@@ -153,7 +159,7 @@ export function SettingsApp() {
       setExtraRoots(await api.getExtraRoots());
       await api.triggerSync();
     } catch (err) {
-      setExtraRootsError(String(err));
+      setExtraRootsError(formatInvokeError(err));
     } finally {
       setExtraRootsBusy(false);
     }
@@ -170,7 +176,7 @@ export function SettingsApp() {
       setExtraRoots(await api.getExtraRoots());
       await api.triggerSync();
     } catch (err) {
-      setExtraRootsError(String(err));
+      setExtraRootsError(formatInvokeError(err));
     } finally {
       setExtraRootsBusy(false);
     }
