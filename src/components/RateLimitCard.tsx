@@ -68,7 +68,11 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
   if (snapshot.fiveHour) {
     rows.push({ kind: "live", label: "5h", window: snapshot.fiveHour });
   } else if (expectsFiveHour) {
-    rows.push({ kind: "placeholder", label: "5h", message: "近 5 小时无活动" });
+    rows.push({
+      kind: "placeholder",
+      label: "5h",
+      message: snapshot.fiveHourNotEnforced ? "官方当前未启用" : "近 5 小时无活动",
+    });
   }
   if (snapshot.sevenDay) rows.push({ kind: "live", label: "7d", window: snapshot.sevenDay });
 
@@ -108,6 +112,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
       {snapshot.status.kind === "error" && (
         <MessageContent text={snapshot.status.message} action="重试" />
       )}
+      {snapshot.status.kind === "ok" && <FreshnessNote snapshot={snapshot} />}
     </div>
   );
 }
@@ -275,7 +280,7 @@ function WaitingForClaudeContent() {
   return (
     <div className="flex items-center gap-2">
       <span className="min-w-0 grow text-[11px] leading-snug" style={{ color: "#808080" }}>
-        已启用，使用 Claude Code 后会自动显示
+        暂无订阅配额数据，请确认 Claude 已登录
       </span>
       <button
         className="shrink-0 rounded-full px-2.5 py-[3px] text-[11px]"
@@ -286,6 +291,18 @@ function WaitingForClaudeContent() {
       </button>
     </div>
   );
+}
+
+function FreshnessNote({ snapshot }: { snapshot: ProviderRateLimit }) {
+  const ageMinutes = snapshot.dataAsOf
+    ? Math.max(0, Math.floor((Date.now() / 1000 - snapshot.dataAsOf) / 60))
+    : 0;
+  const notes = [
+    ageMinutes >= 5 ? `数据截至 ${ageMinutes} 分钟前` : null,
+    snapshot.resetCreditsCount ? `重置券 ×${snapshot.resetCreditsCount}` : null,
+  ].filter(Boolean);
+  if (notes.length === 0) return null;
+  return <div className="text-[10px] text-neutral-500">{notes.join(" · ")}</div>;
 }
 
 function MessageContent({ text, action }: { text: string; action: string }) {

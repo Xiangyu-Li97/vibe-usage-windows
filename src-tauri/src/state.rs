@@ -1,8 +1,8 @@
 //! Shared app state (counterpart of AppState.swift's service wiring).
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicBool;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use std::time::Instant;
 use vibe_core::config::ConfigManager;
@@ -93,6 +93,8 @@ pub struct AppCtx {
     pub sync_pending: AtomicBool,
     pub device_link_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub scheduler_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// Prevent overlapping UI events from launching duplicate network/probe work.
+    pub rate_limit_refresh: tokio::sync::Mutex<()>,
     pub rate_limits: Mutex<RateLimitCache>,
     pub update_info: Mutex<Option<UpdateInfo>>,
     /// (cost, tokens) for the active time range, pushed by the frontend.
@@ -122,6 +124,7 @@ impl AppCtx {
             sync_pending: AtomicBool::new(false),
             device_link_task: Mutex::new(None),
             scheduler_task: Mutex::new(None),
+            rate_limit_refresh: tokio::sync::Mutex::new(()),
             rate_limits: Mutex::new(RateLimitCache::default()),
             update_info: Mutex::new(None),
             tray_stats: Mutex::new(None),

@@ -44,6 +44,7 @@
 | `SyncEngine`（npx/bun x，120s） | `services/sync_engine.rs`（内置 CLI + node，120s，CREATE_NO_WINDOW） |
 | 设置中的隔离运行时目录（Codex / Grok / Antigravity） | 原生文件夹选择器 + 同一组 CLI `config roots/add-root/remove-root` 命令 |
 | `SyncScheduler`（30 分钟） | `services/scheduler.rs` |
+| Codex / Claude 实时订阅配额与安全回退 | Codex 官方接口优先 + JSONL 回退；Claude 受限 stdio 探测 + 账户校验缓存；启动时安全退休旧状态栏 hook |
 | `RuntimeDetector` | `crates/core/runtime.rs`（Windows 路径 + 捆绑 node 兜底） |
 | `CodexRateLimitReader` | `crates/core/rate_limit/codex.rs` |
 | `ClaudeRateLimitReader` | `crates/core/rate_limit/claude.rs` |

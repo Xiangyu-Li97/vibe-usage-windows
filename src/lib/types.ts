@@ -183,6 +183,10 @@ export interface ProviderRateLimit {
   fiveHour?: RateLimitWindow | null;
   sevenDay?: RateLimitWindow | null;
   planLabel?: string | null;
+  /** Epoch seconds when the provider produced the numbers. */
+  dataAsOf?: number | null;
+  fiveHourNotEnforced?: boolean;
+  resetCreditsCount?: number | null;
   status: RateLimitStatus;
 }
 

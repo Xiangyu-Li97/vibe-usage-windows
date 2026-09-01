@@ -38,6 +38,9 @@ pub fn read_from(sessions_dir: &Path, now: f64) -> ProviderRateLimit {
             five_hour: snapshot.five_hour,
             seven_day: snapshot.seven_day,
             plan_label: snapshot.plan_label,
+            data_as_of: None,
+            five_hour_not_enforced: false,
+            reset_credits_count: None,
             status: RateLimitStatus::Ok,
         };
     }
@@ -196,7 +199,9 @@ mod tests {
     }
 
     fn token_count_line(rate_limits: &str) -> String {
-        format!(r#"{{"timestamp":"t","payload":{{"type":"token_count","info":{{}},"rate_limits":{rate_limits}}}}}"#)
+        format!(
+            r#"{{"timestamp":"t","payload":{{"type":"token_count","info":{{}},"rate_limits":{rate_limits}}}}}"#
+        )
     }
 
     #[test]
@@ -218,7 +223,10 @@ mod tests {
         write_rollout(
             &day,
             "rollout-2026-07-03T10-00-00.jsonl",
-            &[r#"{"payload":{"type":"session_meta"}}"#, &token_count_line(&rl)],
+            &[
+                r#"{"payload":{"type":"session_meta"}}"#,
+                &token_count_line(&rl),
+            ],
         );
 
         let r = read_from(dir.path(), NOW);
@@ -266,7 +274,8 @@ mod tests {
     fn resets_in_seconds_fallback() {
         let dir = tempdir().unwrap();
         let day = dir.path().join("2026").join("07").join("03");
-        let rl = r#"{"primary":{"used_percent":37.0,"window_minutes":300,"resets_in_seconds":1200}}"#;
+        let rl =
+            r#"{"primary":{"used_percent":37.0,"window_minutes":300,"resets_in_seconds":1200}}"#;
         write_rollout(&day, "rollout-a.jsonl", &[&token_count_line(rl)]);
         let r = read_from(dir.path(), NOW);
         let five = r.five_hour.unwrap();
@@ -313,7 +322,11 @@ mod tests {
             r#"{{"primary":{{"used_percent":42.0,"window_minutes":10080,"resets_at":{}}}}}"#,
             NOW + 999.0
         );
-        write_rollout(&day, "rollout-a-has-limits.jsonl", &[&token_count_line(&rl)]);
+        write_rollout(
+            &day,
+            "rollout-a-has-limits.jsonl",
+            &[&token_count_line(&rl)],
+        );
         let r = read_from(dir.path(), NOW);
         assert_eq!(r.seven_day.unwrap().utilization, 42.0);
     }

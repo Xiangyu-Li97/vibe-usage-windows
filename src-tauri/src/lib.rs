@@ -34,16 +34,13 @@ pub fn run() {
             {
                 let ctx = app.state::<AppCtx>();
 
-                // Self-heal the Claude statusline wrapper if it was clobbered
-                // (mirrors AppState.initialize → StatuslineHook.verifyAndRepair).
-                let claude_enabled = ctx.settings.lock().unwrap().claude_rate_limit_enabled;
-                if claude_enabled {
-                    let repair_handle = handle.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        services::rate_limits::statusline_hook(&repair_handle)
-                            .verify_and_repair(true);
-                    });
-                }
+                // New quota reads are inert subprocess/file reads. Undo only
+                // the statusline edit older releases can prove they own.
+                let retirement_handle = handle.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ =
+                        services::rate_limits::statusline_hook(&retirement_handle).retire_legacy();
+                });
 
                 // Configured → immediate sync + 30-minute schedule.
                 if ctx.config.is_configured() {

@@ -304,6 +304,25 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, [fetchUsageData, fetchUsageDataIfNeeded, refreshRateLimits]);
 
+  // The backend can begin its startup sync before WebView event listeners are
+  // fully attached. Reconcile only while the UI believes a sync is active so
+  // a missed success/idle event can never leave the footer spinning forever.
+  useEffect(() => {
+    if (syncState.status !== "syncing") return;
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void api.getSyncState().then((next) => {
+        if (disposed) return;
+        setSyncState(next);
+        if (next.status === "success") void fetchUsageData();
+      });
+    }, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [fetchUsageData, syncState.status]);
+
   // Push tray stats (cost + tokens for the ACTIVE range, no filters) —
   // mirrors AppState.menuBarCost/menuBarTokens incl. the `.today` cutoff.
   useEffect(() => {

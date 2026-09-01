@@ -33,7 +33,14 @@ pub fn get_app_status(app: AppHandle) -> AppStatus {
     let api_key_display = api_key.as_ref().map(|key| {
         if key.chars().count() > 12 {
             let prefix: String = key.chars().take(8).collect();
-            let suffix: String = key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+            let suffix: String = key
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
             format!("{prefix}...{suffix}")
         } else {
             key.clone()
@@ -76,7 +83,9 @@ pub struct DeviceLinkStart {
 
 #[tauri::command]
 pub async fn start_device_link(app: AppHandle) -> Result<DeviceLinkStart, String> {
-    device_link::start(app).await.map(|user_code| DeviceLinkStart { user_code })
+    device_link::start(app)
+        .await
+        .map(|user_code| DeviceLinkStart { user_code })
 }
 
 #[tauri::command]
@@ -138,20 +147,14 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
 
 #[tauri::command]
 pub fn set_settings(app: AppHandle, settings: AppSettings) {
-    let claude_was_enabled = {
+    {
         let ctx = app.state::<AppCtx>();
         let mut current = ctx.settings.lock().unwrap();
-        let was = current.claude_rate_limit_enabled;
         *current = settings.clone();
-        was
-    };
+    }
     let ctx = app.state::<AppCtx>();
     ctx.save_settings();
 
-    // Disabling Claude capture restores the user's original statusline.
-    if claude_was_enabled && !settings.claude_rate_limit_enabled {
-        let _ = rate_limits::statusline_hook(&app).uninstall();
-    }
     let _ = app.emit("settings-updated", &settings);
     crate::tray::update_tray(&app);
 }
@@ -224,11 +227,7 @@ pub fn open_settings_impl(app: &AppHandle) {
     // recovery path in case the window was closed by the platform.
     // Keep the app URL query-free here: packaged asset loading treats the
     // whole string as an app resource path on some WebView/Tauri versions.
-    let result = WebviewWindowBuilder::new(
-        app,
-        "settings",
-        WebviewUrl::App("index.html".into()),
-    )
+    let result = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("Vibe Usage 设置")
         .inner_size(460.0, 620.0)
         .resizable(false)

@@ -126,8 +126,8 @@ impl StatuslineHook {
         // An older wrapper command (different node path) is still ours: detect
         // by wrapper file path so a node upgrade doesn't self-chain either.
         if let Some(existing) = &existing {
-            let is_ours = existing == &wrapper_command
-                || existing.contains("vibe-usage-statusline");
+            let is_ours =
+                existing == &wrapper_command || existing.contains("vibe-usage-statusline");
             if !is_ours {
                 self.backup_settings_if_needed();
                 atomic_write(&self.sidecar_path(), existing.as_bytes())
@@ -165,6 +165,46 @@ impl StatuslineHook {
         Ok(())
     }
 
+    /// Retire the pre-0.5.12 capture hook without touching a statusline owned
+    /// by another tool. The backup is intentionally preserved.
+    pub fn retire_legacy(&self) -> Result<(), HookError> {
+        let mut settings = self.load_settings()?;
+        let current = settings
+            .get("statusLine")
+            .and_then(|s| s.get("command"))
+            .and_then(Value::as_str)
+            .map(String::from);
+        if current
+            .as_deref()
+            .is_some_and(|command| command.contains("vibe-usage-statusline"))
+        {
+            let original = fs::read_to_string(self.sidecar_path())
+                .ok()
+                .filter(|value| !value.trim().is_empty());
+            if let Some(command) = original {
+                settings.insert(
+                    "statusLine".into(),
+                    json!({ "type": "command", "command": command }),
+                );
+            } else {
+                settings.remove("statusLine");
+            }
+            self.save_settings(&settings)?;
+        }
+
+        for path in [
+            self.wrapper_path(),
+            self.vibe_dir.join("vibe-usage-statusline.sh"),
+            self.sidecar_path(),
+            self.rate_limit_file(),
+        ] {
+            if path.is_file() {
+                let _ = fs::remove_file(path);
+            }
+        }
+        Ok(())
+    }
+
     /// If capture was enabled but an external tool replaced
     /// `statusLine.command`, silently re-wrap: the replacement becomes the new
     /// "original" we forward to. No-op if already installed or never enabled.
@@ -191,8 +231,8 @@ impl StatuslineHook {
         }
         let raw =
             fs::read_to_string(&path).map_err(|e| HookError::SettingsUnreadable(e.to_string()))?;
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|e| HookError::SettingsUnreadable(e.to_string()))?;
+        let value: Value =
+            serde_json::from_str(&raw).map_err(|e| HookError::SettingsUnreadable(e.to_string()))?;
         match value {
             Value::Object(map) => Ok(map),
             _ => Err(HookError::SettingsUnreadable(
@@ -368,5 +408,50 @@ mod tests {
         std::fs::write(h.settings_path(), r#"{}"#).unwrap();
         h.verify_and_repair(false);
         assert!(!h.is_installed());
+    }
+
+    #[test]
+    fn retirement_restores_only_our_hook_and_removes_generated_files() {
+        let dir = tempdir().unwrap();
+        let h = hook(dir.path());
+        std::fs::create_dir_all(&h.claude_dir).unwrap();
+        std::fs::write(
+            h.settings_path(),
+            r#"{"statusLine":{"type":"command","command":"original-hud"},"other":1}"#,
+        )
+        .unwrap();
+        h.install().unwrap();
+        std::fs::write(h.rate_limit_file(), "{}").unwrap();
+
+        h.retire_legacy().unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(h.settings_path()).unwrap()).unwrap();
+        assert_eq!(settings["statusLine"]["command"], "original-hud");
+        assert_eq!(settings["other"], 1);
+        assert!(!h.wrapper_path().exists());
+        assert!(!h.sidecar_path().exists());
+        assert!(!h.rate_limit_file().exists());
+        assert!(h.backup_path().exists(), "the recovery backup must remain");
+    }
+
+    #[test]
+    fn retirement_never_overwrites_an_external_statusline() {
+        let dir = tempdir().unwrap();
+        let h = hook(dir.path());
+        std::fs::create_dir_all(&h.claude_dir).unwrap();
+        std::fs::create_dir_all(&h.vibe_dir).unwrap();
+        std::fs::write(
+            h.settings_path(),
+            r#"{"statusLine":{"type":"command","command":"new-external-hud"}}"#,
+        )
+        .unwrap();
+        std::fs::write(h.sidecar_path(), "stale-old-hud").unwrap();
+
+        h.retire_legacy().unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(h.settings_path()).unwrap()).unwrap();
+        assert_eq!(settings["statusLine"]["command"], "new-external-hud");
     }
 }
