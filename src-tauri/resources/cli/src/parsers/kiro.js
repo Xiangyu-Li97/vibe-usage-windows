@@ -1,18 +1,15 @@
 import {
-  copyFileSync,
   createReadStream,
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
-  rmSync,
   statSync,
 } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
-import { aggregateToBuckets } from './index.js';
-import { queryDbJson } from './sqlite.js';
+import { homedir } from 'node:os';
+import { aggregateToBuckets } from './aggregate.js';
+import { queryDbJsonSnapshotOnLock, sqliteUnavailableError, isSqliteUnavailableError } from './sqlite.js';
 
 const KIRO_AGENT_RELATIVE = join('User', 'globalStorage', 'kiro.kiroagent');
 const KIRO_USER_RELATIVE = 'User';
@@ -122,37 +119,9 @@ export function getKiroCliSessionsDir() {
   return existsSync(def) ? def : null;
 }
 
-function isLockError(err) {
-  return err && typeof err.message === 'string' && /database is locked/i.test(err.message);
-}
-
-function queryDb(dbPath, sql) {
-  return queryDbJson(dbPath, sql);
-}
-
-function queryDbSnapshotOnLock(dbPath, sql) {
-  try {
-    return queryDb(dbPath, sql);
-  } catch (err) {
-    if (!isLockError(err)) throw err;
-    const snapshotDir = mkdtempSync(join(tmpdir(), 'vibe-usage-kiro-'));
-    const queryPath = join(snapshotDir, 'data.sqlite3');
-    copyFileSync(dbPath, queryPath);
-    for (const suffix of ['-shm', '-wal']) {
-      const companion = `${dbPath}${suffix}`;
-      if (existsSync(companion)) copyFileSync(companion, `${queryPath}${suffix}`);
-    }
-    try {
-      return queryDb(queryPath, sql);
-    } finally {
-      rmSync(snapshotDir, { recursive: true, force: true });
-    }
-  }
-}
-
 function queryOptionalDb(dbPath, sql) {
   try {
-    return queryDbSnapshotOnLock(dbPath, sql);
+    return queryDbJsonSnapshotOnLock(dbPath, sql, { tempPrefix: 'vibe-usage-kiro-' });
   } catch (err) {
     const msg = err && typeof err.message === 'string' ? err.message : '';
     if (/no such table|no such column/i.test(msg)) return [];
@@ -167,7 +136,7 @@ const TOKENS_SQL =
   'ORDER BY id ASC';
 
 function readLegacyDb(dbPath) {
-  return queryDbSnapshotOnLock(dbPath, TOKENS_SQL);
+  return queryDbJsonSnapshotOnLock(dbPath, TOKENS_SQL, { tempPrefix: 'vibe-usage-kiro-' });
 }
 
 // Legacy Kiro dev telemetry fallback. This is opt-in because recent Kiro builds
@@ -357,7 +326,7 @@ export function conversationsToEstimateEntries(conversations) {
     }
   }
   for (const conversation of byId.values()) {
-    entries.push(...conversationToEntries(conversation));
+    for (const entry of conversationToEntries(conversation)) entries.push(entry);
   }
   return entries;
 }
@@ -588,7 +557,7 @@ async function readCliSessionStreamEntries() {
   const entries = [];
   for (const file of files) {
     try {
-      entries.push(...await readCliSessionEntries(dir, file));
+      for (const entry of await readCliSessionEntries(dir, file)) entries.push(entry);
     } catch {
       // skip unreadable / concurrently rotated session
     }
@@ -708,7 +677,7 @@ async function readUsageSnapshots(userPath) {
   const snapshots = [];
   for (const file of files) {
     try {
-      snapshots.push(...await readLogSnapshots(file));
+      for (const snapshot of await readLogSnapshots(file)) snapshots.push(snapshot);
     } catch {
       // skip unreadable / concurrently rotated logs
     }
@@ -790,9 +759,7 @@ export async function parse() {
       return { buckets: aggregateToBuckets(estimateEntries), sessions: [] };
     }
   } catch (err) {
-    if (err && typeof err.message === 'string' && err.message.includes('ENOENT')) {
-      throw new Error('sqlite3 CLI not found. Install sqlite3 (or use Node >= 22.5) to sync Kiro CLI data.');
-    }
+    if (isSqliteUnavailableError(err)) throw sqliteUnavailableError('Kiro CLI');
     throw err;
   }
 

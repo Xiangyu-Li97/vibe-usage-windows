@@ -10,12 +10,14 @@ import {
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
-import { aggregateToBuckets } from './index.js';
+import { aggregateToBuckets } from './aggregate.js';
+import { mergeCindyHarnessUsage, readCindyHarnessUsage } from './cindy-ledger.js';
 import {
   codexSessionDirs,
   resolveCodexHomes,
   validateExtraCodexHome,
 } from '../codex-roots.js';
+import { discoverCodexHomes } from '../extra-roots.js';
 import {
   codexCacheEnabled,
   fileSignature,
@@ -43,7 +45,7 @@ function findJsonlFiles(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        results.push(...findJsonlFiles(fullPath));
+        for (const nested of findJsonlFiles(fullPath)) results.push(nested);
       } else if (entry.name.endsWith('.jsonl')) {
         results.push(fullPath);
       }
@@ -791,12 +793,12 @@ function mergeFileResults(results) {
         reasoningOutputTokens: bucket.reasoningOutputTokens,
       });
     }
-    sessions.push(...(result.sessions || []));
+    for (const session of result.sessions || []) sessions.push(session);
   }
   return { buckets: aggregateToBuckets(entries), sessions };
 }
 
-export async function parse({ codexExtraHome } = {}) {
+async function parseNativeCodex({ codexExtraHome, extraRoots = [] } = {}) {
   if (codexExtraHome?.trim()) {
     const validation = validateExtraCodexHome(codexExtraHome);
     if (!validation.ok) {
@@ -809,7 +811,24 @@ export async function parse({ codexExtraHome } = {}) {
     }
   }
 
-  const codexHomes = resolveCodexHomes(codexExtraHome);
+  const configuredHomes = [];
+  for (const root of extraRoots) {
+    const discovered = discoverCodexHomes(root);
+    if (!discovered.readable || discovered.homes.length === 0) {
+      return {
+        buckets: [],
+        sessions: [],
+        skipped: true,
+        warnings: [`codex: 额外根目录不可用，已跳过本次 Codex 同步: ${discovered.root}`],
+      };
+    }
+    configuredHomes.push(...discovered.homes);
+  }
+
+  const codexHomes = [...new Set([
+    ...resolveCodexHomes(codexExtraHome),
+    ...configuredHomes,
+  ])];
   const dirs = codexHomes.flatMap(codexHome => (
     codexSessionDirs(codexHome).map(dir => ({ codexHome, dir }))
   ));
@@ -1018,4 +1037,9 @@ export async function parse({ codexExtraHome } = {}) {
   }
 
   return { ...mergeFileResults(results), cache: cacheStats };
+}
+
+export async function parse(options = {}) {
+  const nativeResult = await parseNativeCodex(options);
+  return mergeCindyHarnessUsage(nativeResult, readCindyHarnessUsage('codex'));
 }

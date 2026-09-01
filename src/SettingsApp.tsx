@@ -4,8 +4,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api, onDeviceLink, onSyncState } from "./lib/api";
-import { AppSettings, AppStatus, SyncState } from "./lib/types";
+import { formatInvokeError } from "./lib/errors";
+import { extraRootsLoadPatch } from "./lib/extraRoots";
+import { AppSettings, AppStatus, ExtraRoots, SyncState } from "./lib/types";
 import { formatRelativeTime } from "./lib/formatters";
 
 export function SettingsApp() {
@@ -20,19 +23,28 @@ export function SettingsApp() {
   const [quotaError, setQuotaError] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [extraRoots, setExtraRoots] = useState<ExtraRoots>({});
+  const [extraRootsBusy, setExtraRootsBusy] = useState(false);
+  const [extraRootsError, setExtraRootsError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    const [nextStatus, nextSettings, nextSyncState, nextAutoStart] = await Promise.allSettled([
+    const [nextStatus, nextSettings, nextSyncState, nextAutoStart, nextExtraRoots] = await Promise.allSettled([
       api.getAppStatus(),
       api.getSettings(),
       api.getSyncState(),
       api.getLaunchAtLogin(),
+      api.getExtraRoots(),
     ]);
 
     if (nextStatus.status === "fulfilled") setStatus(nextStatus.value);
     if (nextSettings.status === "fulfilled") setSettings(nextSettings.value);
     if (nextSyncState.status === "fulfilled") setSyncState(nextSyncState.value);
     if (nextAutoStart.status === "fulfilled") setAutoStart(nextAutoStart.value);
+    const extraPatch = extraRootsLoadPatch(nextExtraRoots);
+    if (extraPatch.extraRoots !== undefined) {
+      setExtraRoots(extraPatch.extraRoots);
+    }
+    setExtraRootsError(extraPatch.extraRootsError);
   }, []);
 
   useEffect(() => {
@@ -74,7 +86,7 @@ export function SettingsApp() {
       const { userCode } = await api.startDeviceLink();
       setRelinkUserCode(userCode);
     } catch (err) {
-      setRelinkError(`无法连接服务端：${String(err)}`);
+      setRelinkError(`无法连接服务端：${formatInvokeError(err)}`);
       setIsRelinking(false);
     }
   };
@@ -112,7 +124,7 @@ export function SettingsApp() {
       await reload();
     } catch (err) {
       setSettings({ ...settings, claudeRateLimitEnabled: false });
-      setQuotaError(String(err));
+      setQuotaError(formatInvokeError(err));
     }
   };
 
@@ -133,7 +145,40 @@ export function SettingsApp() {
       const info = await api.checkForUpdate();
       setUpdateMessage(info ? `发现新版本 ${info.version}` : "已是最新版本");
     } catch (err) {
-      setUpdateMessage(`检查失败: ${String(err)}`);
+      setUpdateMessage(`检查失败: ${formatInvokeError(err)}`);
+    }
+  };
+
+  const addExtraRoot = async (source: "codex" | "grok" | "antigravity") => {
+    const path = await open({ directory: true, multiple: false, title: "选择隔离运行时目录" });
+    if (!path) return;
+    setExtraRootsBusy(true);
+    setExtraRootsError(null);
+    try {
+      await api.addExtraRoot(source, path);
+      setExtraRoots(await api.getExtraRoots());
+      await api.triggerSync();
+    } catch (err) {
+      setExtraRootsError(formatInvokeError(err));
+    } finally {
+      setExtraRootsBusy(false);
+    }
+  };
+
+  const removeExtraRoot = async (
+    source: "codex" | "grok" | "antigravity",
+    path: string,
+  ) => {
+    setExtraRootsBusy(true);
+    setExtraRootsError(null);
+    try {
+      await api.removeExtraRoot(source, path);
+      setExtraRoots(await api.getExtraRoots());
+      await api.triggerSync();
+    } catch (err) {
+      setExtraRootsError(formatInvokeError(err));
+    } finally {
+      setExtraRootsBusy(false);
     }
   };
 
@@ -192,6 +237,41 @@ export function SettingsApp() {
               </span>
             </Row>
           )}
+        </Section>
+
+        <Section
+          title="隔离运行时目录"
+          footer="可为每种工具添加多个 Multica 或其他隔离目录；默认目录仍会照常统计。"
+        >
+          {([
+            ["codex", "Codex"],
+            ["grok", "Grok"],
+            ["antigravity", "Antigravity / AGY"],
+          ] as const).map(([source, label]) => (
+            <div key={source} className="flex flex-col gap-2 px-3 py-2" style={{ borderColor: "#3A3A3C" }}>
+              <div className="flex items-center justify-between">
+                <span>{label}</span>
+                <SmallButton disabled={extraRootsBusy} onClick={() => void addExtraRoot(source)}>
+                  添加目录…
+                </SmallButton>
+              </div>
+              {(extraRoots[source] ?? []).map((path) => (
+                <div key={path} className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-400" title={path}>
+                    {path}
+                  </span>
+                  <button
+                    className="shrink-0 text-xs text-red-400 disabled:opacity-50"
+                    disabled={extraRootsBusy}
+                    onClick={() => void removeExtraRoot(source, path)}
+                  >
+                    移除
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+          {extraRootsError && <div className="px-3 py-2 text-xs text-red-400">{extraRootsError}</div>}
         </Section>
 
         {/* 订阅配额 */}

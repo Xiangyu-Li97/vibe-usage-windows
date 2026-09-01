@@ -200,8 +200,8 @@ export function getConfigPath() {`,
 
   patchFile("src/state.js", [
     [
-      "import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';",
-      "import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, renameSync, statSync } from 'node:fs';",
+      "import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, renameSync, rmSync } from 'node:fs';",
+      "import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, renameSync, rmSync, statSync } from 'node:fs';",
       "state fs helpers",
     ],
     [
@@ -229,8 +229,8 @@ export function getStatePath() {`,
       "state EISDIR repair helpers",
     ],
     [
-      "  mkdirSync(STATE_DIR, { recursive: true });\n  writeFileSync(STATE_FILE, JSON.stringify(state) + '\\n', 'utf-8');",
-      "  mkdirSync(STATE_DIR, { recursive: true });\n  moveDirectoryOutOfFilePath(STATE_FILE);\n  writeFileSync(STATE_FILE, JSON.stringify(state) + '\\n', 'utf-8');",
+      "  mkdirSync(STATE_DIR, { recursive: true });\n  // Atomic replace: write to a unique temp file then rename over the target.",
+      "  mkdirSync(STATE_DIR, { recursive: true });\n  moveDirectoryOutOfFilePath(STATE_FILE);\n  // Atomic replace: write to a unique temp file then rename over the target.",
       "state save EISDIR repair",
     ],
   ]);

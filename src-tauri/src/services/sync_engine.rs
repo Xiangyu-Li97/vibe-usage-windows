@@ -7,6 +7,7 @@ use crate::process_utils;
 use crate::state::{AppCtx, SyncState, SyncStatus};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use vibe_core::runtime::{self, Runtime, RuntimeKind};
@@ -50,6 +51,69 @@ pub fn node_for_statusline(app: &AppHandle) -> PathBuf {
     }
 }
 
+fn cli_command(app: &AppHandle, args: &[&str]) -> Result<tokio::process::Command, String> {
+    let cli = cli_entry(app).ok_or("未找到内置 CLI 资源")?;
+    let rt = detect_runtime(app).ok_or("未检测到可用的 Node.js 运行时，请安装 Node.js 22+")?;
+    let cli_dir = cli.parent().ok_or("内置 CLI 路径无效")?;
+    let cli_file = cli.file_name().ok_or("内置 CLI 路径无效")?;
+
+    let mut cmd = tokio::process::Command::new(&rt.path);
+    cmd.current_dir(cli_dir)
+        .arg(cli_file)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if let Some(dir) = rt.path.parent() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}{sep}{path}", dir.display()));
+    }
+    cmd.env(
+        "VIBE_USAGE_CONFIG_DIR",
+        app.state::<AppCtx>().config.config_dir.clone(),
+    );
+    cmd.env("VIBE_USAGE_SURFACE", "windows-app");
+    cmd.env(
+        "VIBE_USAGE_SURFACE_VERSION",
+        app.package_info().version.to_string(),
+    );
+    if crate::state::IS_DEV {
+        cmd.env("VIBE_USAGE_DEV", "1");
+    }
+    if std::env::var("HTTPS_PROXY").is_err() && std::env::var("https_proxy").is_err() {
+        if let Some(proxy) = process_utils::system_proxy_url() {
+            cmd.env("HTTPS_PROXY", &proxy);
+            cmd.env("HTTP_PROXY", &proxy);
+        }
+    }
+    cmd.env("NODE_USE_ENV_PROXY", "1");
+    process_utils::hide_tokio_command_window(&mut cmd);
+    Ok(cmd)
+}
+
+/// Run a short config command against the same bundled CLI and config directory
+/// used by sync.
+pub async fn run_config_command(app: &AppHandle, args: &[&str]) -> Result<String, String> {
+    let output = tokio::time::timeout(Duration::from_secs(30), cli_command(app, args)?.output())
+        .await
+        .map_err(|_| "CLI 配置操作超时".to_string())?
+        .map_err(|e| format!("CLI 配置操作失败: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = extract_error_line(&stderr);
+    Err(if message.is_empty() {
+        format!("CLI 配置操作失败: Exit code {}", output.status.code().unwrap_or(-1))
+    } else {
+        message
+    })
+}
+
 fn set_state(app: &AppHandle, update: impl FnOnce(&mut SyncState)) {
     let ctx = app.state::<crate::state::AppCtx>();
     let snapshot = {
@@ -68,14 +132,59 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Run one sync. Concurrent calls return immediately (同步已在进行中).
-pub async fn run_sync(app: AppHandle) {
-    let ctx = app.state::<AppCtx>();
-
-    let Ok(_guard) = ctx.sync_running.try_lock() else {
-        log::info!("sync already running");
-        return;
+/// Request work that must not be dropped if another run is already in flight.
+/// Overlapping callers coalesce into a single follow-up after the in-flight
+/// run finishes (so a post-config sync still executes).
+pub async fn run_with_follow_up<F, Fut>(
+    running: &tokio::sync::Mutex<()>,
+    pending: &AtomicBool,
+    work: F,
+) where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    pending.store(true, Ordering::SeqCst);
+    let mut guard = match running.try_lock() {
+        Ok(g) => Some(g),
+        Err(_) => {
+            log::info!("sync already running; queued follow-up");
+            return;
+        }
     };
+
+    loop {
+        pending.store(false, Ordering::SeqCst);
+        work().await;
+        if pending.load(Ordering::SeqCst) {
+            log::info!("running queued follow-up sync");
+            continue;
+        }
+        drop(guard.take());
+        if !pending.load(Ordering::SeqCst) {
+            return;
+        }
+        match running.try_lock() {
+            Ok(g) => guard = Some(g),
+            Err(_) => return,
+        }
+    }
+}
+
+/// Run one sync. Concurrent calls queue a follow-up instead of being dropped.
+pub async fn run_sync(app: AppHandle) {
+    let work_app = app.clone();
+    let ctx = app.state::<AppCtx>();
+    run_with_follow_up(&ctx.sync_running, &ctx.sync_pending, move || {
+        let app = work_app.clone();
+        async move {
+            run_sync_once(app).await;
+        }
+    })
+    .await;
+}
+
+async fn run_sync_once(app: AppHandle) {
+    let ctx = app.state::<AppCtx>();
 
     if !ctx.config.is_configured() {
         return;
@@ -117,60 +226,7 @@ pub async fn run_sync(app: AppHandle) {
 }
 
 async fn run_cli_sync(app: &AppHandle) -> Result<String, String> {
-    let Some(cli) = cli_entry(app) else {
-        return Err("同步失败: 未找到内置 CLI 资源".into());
-    };
-    let Some(rt) = detect_runtime(app) else {
-        return Err("未检测到可用的 Node.js 运行时，请安装 Node.js 22+".into());
-    };
-    let Some(cli_dir) = cli.parent() else {
-        return Err("同步失败: 内置 CLI 路径无效".into());
-    };
-    let Some(cli_file) = cli.file_name() else {
-        return Err("同步失败: 内置 CLI 路径无效".into());
-    };
-    log::info!("sync via {:?} {}", rt.kind, rt.path.display());
-
-    let mut cmd = tokio::process::Command::new(&rt.path);
-    cmd.current_dir(cli_dir)
-        .arg(cli_file)
-        .arg("sync")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    // Ensure the runtime's directory is in PATH (mirrors SyncEngine).
-    if let Some(dir) = rt.path.parent() {
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let path = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("{}{sep}{path}", dir.display()));
-    }
-    cmd.env(
-        "VIBE_USAGE_CONFIG_DIR",
-        app.state::<AppCtx>().config.config_dir.clone(),
-    );
-    cmd.env("VIBE_USAGE_SURFACE", "windows-app");
-    cmd.env(
-        "VIBE_USAGE_SURFACE_VERSION",
-        app.package_info().version.to_string(),
-    );
-    if crate::state::IS_DEV {
-        cmd.env("VIBE_USAGE_DEV", "1");
-    }
-    // Node's fetch() ignores the Windows system proxy (macOS URLSession honors
-    // it implicitly — this is why the macOS app never hit the issue). Bridge
-    // the registry proxy into env vars; NODE_USE_ENV_PROXY makes Node ≥22.15
-    // route global fetch through them.
-    if std::env::var("HTTPS_PROXY").is_err() && std::env::var("https_proxy").is_err() {
-        if let Some(proxy) = process_utils::system_proxy_url() {
-            log::info!("bridging system proxy to CLI: {proxy}");
-            cmd.env("HTTPS_PROXY", &proxy);
-            cmd.env("HTTP_PROXY", &proxy);
-        }
-    }
-    cmd.env("NODE_USE_ENV_PROXY", "1");
-    process_utils::hide_tokio_command_window(&mut cmd);
+    let mut cmd = cli_command(app, &["sync"]).map_err(|e| format!("同步失败: {e}"))?;
 
     let mut child = cmd.spawn().map_err(|e| format!("同步失败: {e}"))?;
     let stdout_pipe = child.stdout.take();
@@ -293,4 +349,145 @@ fn write_sync_log(app: &AppHandle, status: &std::process::ExitStatus, stdout: &s
         let _ = f.write_all(entry.as_bytes());
     }
     log::debug!("sync exit={status:?}; log → {}", file.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_with_follow_up;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, Notify};
+
+    async fn wait_true(flag: &AtomicBool) {
+        let start = std::time::Instant::now();
+        while !flag.load(Ordering::SeqCst) {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "timed out waiting for queued follow-up flag"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn overlapping_sync_request_is_not_dropped() {
+        let running = Arc::new(Mutex::new(()));
+        let pending = Arc::new(AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+
+        let first = tokio::spawn({
+            let running = running.clone();
+            let pending = pending.clone();
+            let runs = runs.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || {
+                    let runs = runs.clone();
+                    let first_started = first_started.clone();
+                    let release_first = release_first.clone();
+                    async move {
+                        let n = runs.fetch_add(1, Ordering::SeqCst);
+                        if n == 0 {
+                            first_started.notify_waiters();
+                            release_first.notified().await;
+                        }
+                    }
+                })
+                .await;
+            }
+        });
+
+        first_started.notified().await;
+
+        let second = tokio::spawn({
+            let running = running.clone();
+            let pending = pending.clone();
+            let runs = runs.clone();
+            async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || {
+                    let runs = runs.clone();
+                    async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+                .await;
+            }
+        });
+
+        wait_true(pending.as_ref()).await;
+        release_first.notify_waiters();
+        first.await.unwrap();
+        second.await.unwrap();
+
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "in-flight sync plus the queued post-config request"
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_requests_coalesce_to_one_follow_up() {
+        let running = Arc::new(Mutex::new(()));
+        let pending = Arc::new(AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+
+        let first = tokio::spawn({
+            let running = running.clone();
+            let pending = pending.clone();
+            let runs = runs.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || {
+                    let runs = runs.clone();
+                    let first_started = first_started.clone();
+                    let release_first = release_first.clone();
+                    async move {
+                        let n = runs.fetch_add(1, Ordering::SeqCst);
+                        if n == 0 {
+                            first_started.notify_waiters();
+                            release_first.notified().await;
+                        }
+                    }
+                })
+                .await;
+            }
+        });
+
+        first_started.notified().await;
+
+        for _ in 0..3 {
+            let running = running.clone();
+            let pending = pending.clone();
+            tokio::spawn(async move {
+                run_with_follow_up(running.as_ref(), pending.as_ref(), || async {}).await;
+            });
+        }
+
+        wait_true(pending.as_ref()).await;
+        release_first.notify_waiters();
+        first.await.unwrap();
+
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn single_sync_request_runs_once() {
+        let running = Mutex::new(());
+        let pending = AtomicBool::new(false);
+        let runs = AtomicUsize::new(0);
+        run_with_follow_up(&running, &pending, || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            async {}
+        })
+        .await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(!pending.load(Ordering::SeqCst));
+    }
 }

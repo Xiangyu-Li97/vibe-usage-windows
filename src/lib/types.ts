@@ -216,6 +216,8 @@ export interface AppSettings {
   claudeRateLimitEnabled: boolean;
 }
 
+export type ExtraRoots = Partial<Record<"codex" | "grok" | "antigravity", string[]>>;
+
 export interface UpdateInfo {
   version: string;
   notes?: string | null;

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { aggregateToBuckets, extractSessions } from './index.js';
+import { aggregateToBuckets, extractSessions } from './aggregate.js';
 
 function resolveThreadsDir() {
   if (process.env.AMP_DATA_DIR) return process.env.AMP_DATA_DIR;
@@ -21,7 +21,7 @@ function findThreadFiles(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        results.push(...findThreadFiles(fullPath));
+        for (const nested of findThreadFiles(fullPath)) results.push(nested);
       } else if (entry.isFile() && entry.name.startsWith('T-') && entry.name.endsWith('.json')) {
         results.push(fullPath);
       }
@@ -83,17 +83,23 @@ export async function parse() {
 
         const inputTokens = event?.tokens?.input || 0;
         const outputTokens = event?.tokens?.output || 0;
-        if (inputTokens === 0 && outputTokens === 0) continue;
 
         const toMessage = Number.isInteger(event.toMessageId) ? messages[event.toMessageId] : null;
         const cacheReadInputTokens = toMessage?.usage?.cacheReadInputTokens || 0;
+        const cacheCreationInputTokens = toMessage?.usage?.cacheCreationInputTokens || 0;
+        if (
+          inputTokens === 0
+          && outputTokens === 0
+          && cacheReadInputTokens === 0
+          && cacheCreationInputTokens === 0
+        ) continue;
 
         entries.push({
           source: 'amp',
           model: event?.model || 'unknown',
           project: 'unknown',
           timestamp: ts,
-          inputTokens,
+          inputTokens: inputTokens + cacheCreationInputTokens,
           outputTokens,
           cachedInputTokens: cacheReadInputTokens,
           reasoningOutputTokens: 0,
@@ -109,14 +115,20 @@ export async function parse() {
 
         const inputTokens = usage.inputTokens || 0;
         const outputTokens = usage.outputTokens || 0;
-        if (inputTokens === 0 && outputTokens === 0 && (usage.cacheReadInputTokens || 0) === 0) continue;
+        const cacheCreationInputTokens = usage.cacheCreationInputTokens || 0;
+        if (
+          inputTokens === 0
+          && outputTokens === 0
+          && (usage.cacheReadInputTokens || 0) === 0
+          && cacheCreationInputTokens === 0
+        ) continue;
 
         entries.push({
           source: 'amp',
           model: usage.model || 'unknown',
           project: 'unknown',
           timestamp: ts,
-          inputTokens,
+          inputTokens: inputTokens + cacheCreationInputTokens,
           outputTokens,
           cachedInputTokens: usage.cacheReadInputTokens || 0,
           reasoningOutputTokens: 0,

@@ -1,6 +1,7 @@
 //! Shared app state (counterpart of AppState.swift's service wiring).
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicBool;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -87,6 +88,9 @@ pub struct AppCtx {
     pub sync_state: Mutex<SyncState>,
     /// Mutual exclusion for the CLI subprocess (同步已在进行中 guard).
     pub sync_running: tokio::sync::Mutex<()>,
+    /// Set when a sync is requested while one is already running so the
+    /// in-flight run drains a follow-up instead of dropping the request.
+    pub sync_pending: AtomicBool,
     pub device_link_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub scheduler_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub rate_limits: Mutex<RateLimitCache>,
@@ -115,6 +119,7 @@ impl AppCtx {
             settings: Mutex::new(settings),
             sync_state: Mutex::new(SyncState::default()),
             sync_running: tokio::sync::Mutex::new(()),
+            sync_pending: AtomicBool::new(false),
             device_link_task: Mutex::new(None),
             scheduler_task: Mutex::new(None),
             rate_limits: Mutex::new(RateLimitCache::default()),

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { aggregateToBuckets, extractSessions } from './index.js';
+import { aggregateToBuckets, extractSessions } from './aggregate.js';
 
 const DROID_SESSIONS_DIR = join(homedir(), '.factory', 'sessions');
 
@@ -13,7 +13,7 @@ function findJsonlFiles(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        results.push(...findJsonlFiles(fullPath));
+        for (const nested of findJsonlFiles(fullPath)) results.push(nested);
       } else if (entry.name.endsWith('.jsonl') && !entry.name.endsWith('.settings.json')) {
         results.push(fullPath);
       }
