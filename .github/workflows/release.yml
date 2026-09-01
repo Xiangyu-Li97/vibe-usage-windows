@@ -38,12 +38,9 @@ jobs:
       - name: Version consistency
         run: node scripts/check-version.mjs
 
-      # Resources must exist before any cargo invocation — tauri-build
-      # validates bundle resources in the build script.
-      - name: Vendor npm latest CLI (with Windows patches)
-        run: node scripts/vendor-cli.mjs
-
-      - name: Verify vendored CLI version
+      # Release the reviewed, checked-in CLI snapshot. Pulling npm's moving
+      # latest tag here could silently replace the code covered by this build.
+      - name: Verify pinned vendored CLI snapshot
         run: node scripts/check-version.mjs
 
       - name: Bundle Node runtime

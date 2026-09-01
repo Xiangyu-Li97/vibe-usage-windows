@@ -282,7 +282,7 @@ export function SettingsApp() {
               onChange={toggleCodexQuota}
             />
           </Row>
-          <Row label="显示 Claude Code 订阅配额">
+          <Row label="显示 Claude 订阅配额">
             <Toggle
               checked={settings?.claudeRateLimitEnabled ?? false}
               onChange={(v) => void toggleClaudeQuota(v)}

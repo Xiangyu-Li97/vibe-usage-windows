@@ -1,5 +1,7 @@
 pub mod api_client;
 pub mod auto_launch;
+pub mod claude_usage;
+pub mod codex_usage;
 pub mod device_link;
 pub mod rate_limits;
 pub mod scheduler;

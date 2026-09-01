@@ -48,6 +48,12 @@ pub struct ProviderRateLimit {
     pub seven_day: Option<RateLimitWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_as_of: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub five_hour_not_enforced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_credits_count: Option<u64>,
     pub status: RateLimitStatus,
 }
 
@@ -58,6 +64,9 @@ impl ProviderRateLimit {
             five_hour: None,
             seven_day: None,
             plan_label: None,
+            data_as_of: None,
+            five_hour_not_enforced: false,
+            reset_credits_count: None,
             status,
         }
     }

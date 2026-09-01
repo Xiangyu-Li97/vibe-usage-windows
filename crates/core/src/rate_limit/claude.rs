@@ -63,6 +63,12 @@ pub fn read_from(capture_file: &Path, enabled: bool, now: f64) -> ProviderRateLi
         seven_day,
         // Can't distinguish Pro vs Max from this payload — leave nil.
         plan_label: None,
+        data_as_of: obj
+            .get("captured_at")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_epoch),
+        five_hour_not_enforced: false,
+        reset_credits_count: None,
         status: RateLimitStatus::Ok,
     }
 }
@@ -104,7 +110,11 @@ fn parse_window(raw: Option<&Value>, duration: f64, now: f64) -> Option<RateLimi
     Some(RateLimitWindow {
         utilization,
         resets_at,
-        window_duration: if reset_in_future { Some(duration) } else { None },
+        window_duration: if reset_in_future {
+            Some(duration)
+        } else {
+            None
+        },
     })
 }
 
@@ -113,7 +123,11 @@ fn parse_window(raw: Option<&Value>, duration: f64, now: f64) -> Option<RateLimi
 pub(crate) fn parse_iso8601_epoch(s: &str) -> Option<f64> {
     let s = s.trim();
     let bytes = s.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || (bytes[10] != b'T' && bytes[10] != b't' && bytes[10] != b' ') {
+    if bytes.len() < 19
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || (bytes[10] != b'T' && bytes[10] != b't' && bytes[10] != b' ')
+    {
         return None;
     }
     let year: i64 = s.get(0..4)?.parse().ok()?;
@@ -215,7 +229,10 @@ mod tests {
         assert_eq!(r.status, RateLimitStatus::Ok);
         let five = r.five_hour.unwrap();
         assert_eq!(five.utilization, 88.0);
-        assert!(five.window_duration.is_none(), "no time bar for stale reset");
+        assert!(
+            five.window_duration.is_none(),
+            "no time bar for stale reset"
+        );
     }
 
     #[test]
@@ -255,7 +272,10 @@ mod tests {
     fn iso8601_parser_variants() {
         assert_eq!(parse_iso8601_epoch("1970-01-01T00:00:00Z"), Some(0.0));
         // Reference values from GNU `date -u -d ... +%s`.
-        assert_eq!(parse_iso8601_epoch("2026-07-03T04:00:00Z"), Some(1783051200.0));
+        assert_eq!(
+            parse_iso8601_epoch("2026-07-03T04:00:00Z"),
+            Some(1783051200.0)
+        );
         assert_eq!(
             parse_iso8601_epoch("2026-07-03T12:00:00+08:00"),
             Some(1783051200.0)
