@@ -20,9 +20,8 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 cargo test --workspace
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-node scripts/vendor-cli.mjs
-if ($LASTEXITCODE -ne 0) { exit 1 }
-
+# Release the reviewed, checked-in CLI snapshot rather than replacing it with
+# npm's moving latest tag after tests have started.
 node scripts/check-version.mjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 

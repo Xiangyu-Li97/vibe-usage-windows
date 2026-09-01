@@ -38,11 +38,19 @@ test("Tauri sync injects the Windows App surface and package version", () => {
   expect(source).toContain("app.package_info().version.to_string()");
 });
 
-test("release vendoring resolves npm latest without an implicit local fallback", () => {
+test("release uses the pinned, reviewed vendored CLI snapshot", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf-8"));
+  const vendoredPackage = JSON.parse(
+    readFileSync("src-tauri/resources/cli/package.json", "utf-8"),
+  );
   const vendorScript = readFileSync("scripts/vendor-cli.mjs", "utf-8");
+  const workflow = readFileSync(".github/workflows/release.yml", "utf-8");
+  const localRelease = readFileSync("scripts/release-windows.ps1", "utf-8");
 
   expect(packageJson.vibeUsageCliChannel).toBe("latest");
+  expect(packageJson.vibeUsageCliVersion).toBe(vendoredPackage.version);
   expect(vendorScript).toContain("@vibe-cafe/vibe-usage@${CLI_CHANNEL}");
   expect(vendorScript).not.toContain("falling back to ../vibe-usage");
+  expect(workflow).not.toContain("node scripts/vendor-cli.mjs");
+  expect(localRelease).not.toContain("node scripts/vendor-cli.mjs");
 });

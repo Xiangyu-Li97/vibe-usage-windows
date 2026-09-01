@@ -13,6 +13,7 @@ const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 const packageJson = JSON.parse(read("package.json"));
 const pkg = packageJson.version;
 const cliChannel = packageJson.vibeUsageCliChannel;
+const expectedCli = packageJson.vibeUsageCliVersion;
 const tauri = JSON.parse(read("src-tauri/tauri.conf.json")).version;
 const cargo = /\[workspace\.package\][^[]*?version\s*=\s*"([^"]+)"/s.exec(read("Cargo.toml"))?.[1];
 const vendoredCli = JSON.parse(read("src-tauri/resources/cli/package.json")).version;
@@ -21,6 +22,7 @@ console.log(`package.json:     ${pkg}`);
 console.log(`tauri.conf.json:  ${tauri}`);
 console.log(`Cargo.toml:       ${cargo}`);
 console.log(`CLI channel:      ${cliChannel}`);
+console.log(`Expected CLI:     ${expectedCli}`);
 console.log(`Vendored CLI:     ${vendoredCli}`);
 
 if (pkg !== tauri || pkg !== cargo) {
@@ -31,8 +33,12 @@ if (cliChannel !== "latest") {
   console.error("✗ CLI channel must be latest");
   process.exit(1);
 }
+if (vendoredCli !== expectedCli) {
+  console.error("✗ vendored CLI does not match the pinned release version");
+  process.exit(1);
+}
 if (!/^\d+\.\d+\.\d+(?:[-+].+)?$/.test(vendoredCli)) {
   console.error("✗ vendored CLI must contain a concrete semantic version");
   process.exit(1);
 }
-console.log("✓ app versions and latest CLI channel are consistent");
+console.log("✓ app versions and pinned vendored CLI are consistent");
