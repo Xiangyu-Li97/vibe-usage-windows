@@ -47,10 +47,11 @@ git clone https://github.com/vibe-cafe/vibe-usage-windows.git
 cd vibe-usage-windows
 
 # 首次：安装工具链 (Node 22 / Rust 1.88 / VS Build Tools)
-pwsh -File scripts/setup-windows-build-env.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-build-env.ps1
 
 pnpm install
 pnpm run release:windows       # 产出 VibeUsage-<version>-Windows-Setup.exe + latest.json
+pnpm run release:windows:test  # 产出带脱敏诊断的本地外测安装包，不生成发布清单
 ```
 
 代码签名构建可通过环境变量提供证书：

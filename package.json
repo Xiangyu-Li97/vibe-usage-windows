@@ -17,7 +17,8 @@
     "vendor:cli": "node scripts/vendor-cli.mjs",
     "fetch:node": "node scripts/fetch-node.mjs",
     "check:version": "node scripts/check-version.mjs",
-    "release:windows": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1"
+    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1",
+    "release:windows:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1 -ExternalTest"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.2.5",

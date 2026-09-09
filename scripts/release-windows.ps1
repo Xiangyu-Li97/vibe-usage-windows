@@ -1,12 +1,35 @@
 # Local Windows release build (mirror of the GitHub Actions release job).
 # Prereqs: Node 22+, pnpm 10, Rust 1.88 (rustup), NSIS (bundled with tauri-cli).
 #
-#   pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1
+
+param(
+  [switch]$ExternalTest
+)
 
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-Write-Host "== Vibe Usage for Windows release build ==" -ForegroundColor Cyan
+if ($ExternalTest) {
+  $env:TAURI_FEATURES = "external-test-diagnostics"
+  $env:VIBE_USAGE_BUILD_KIND = "external-test"
+  $env:VIBE_USAGE_APP_BUILD = "local-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+  if (-not $env:VIBE_USAGE_APP_COMMIT) {
+    $commit = if (Get-Command git -ErrorAction SilentlyContinue) {
+      (& git rev-parse --short=12 HEAD 2>$null)
+    } else {
+      $null
+    }
+    $env:VIBE_USAGE_APP_COMMIT = if ($LASTEXITCODE -eq 0 -and $commit) {
+      $commit.Trim()
+    } else {
+      "source-archive"
+    }
+  }
+}
+
+$buildLabel = if ($ExternalTest) { "external-test" } else { "release" }
+Write-Host "== Vibe Usage for Windows $buildLabel build ==" -ForegroundColor Cyan
 
 node scripts/check-version.mjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -38,9 +61,17 @@ $installer = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*$version
 if (-not $installer) {
   throw "No NSIS installer found for version $version."
 }
-$dest = "VibeUsage-$version-Windows-Setup.exe"
+$dest = if ($ExternalTest) {
+  "VibeUsage-$version-Windows-External-Test-Setup.exe"
+} else {
+  "VibeUsage-$version-Windows-Setup.exe"
+}
 Copy-Item $installer.FullName $dest -Force
-node scripts/generate-updater-manifest.mjs $dest
+if (-not $ExternalTest) {
+  node scripts/generate-updater-manifest.mjs $dest
+}
 
 Write-Host "`n✓ $dest" -ForegroundColor Green
-Write-Host "✓ latest.json" -ForegroundColor Green
+if (-not $ExternalTest) {
+  Write-Host "✓ latest.json" -ForegroundColor Green
+}
