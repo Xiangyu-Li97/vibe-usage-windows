@@ -20,9 +20,8 @@ import { listDbCascades, readDbUsageRecords, readDbWorkspaceUri, readDbSessionEv
  */
 
 const SOURCE = 'antigravity';
-const CONVERSATIONS_DIR = join(homedir(), '.gemini', 'antigravity', 'conversations');
-// `agy` CLI stores conversations in a separate, App-independent directory.
-const CLI_CONVERSATIONS_DIR = join(homedir(), '.gemini', 'antigravity-cli', 'conversations');
+// App, CLI, and the standalone IDE each have their own conversation store.
+const CONVERSATIONS_DIRS = antigravityConversationDirs(homedir());
 
 // User sources → role 'user'; Model source → role 'assistant'; System sources → skip
 const USER_SOURCES = new Set([
@@ -33,24 +32,25 @@ const ASSISTANT_SOURCES = new Set([
   'CORTEX_STEP_SOURCE_MODEL',
 ]);
 
-// ── Process discovery (single instance) ──────────────────────────────
+// ── Process discovery ───────────────────────────────────────────────
 
 const IS_WIN = process.platform === 'win32';
 
 /**
- * Find ONE running language server process with a CSRF token.
- * Returns { pid, csrfToken } or null.
+ * Find running language servers with CSRF tokens. The App and standalone IDE
+ * can run together, and one server cannot read the other's legacy cascades.
  */
-function findLanguageServer() {
+function findLanguageServers() {
   try {
-    return IS_WIN ? findLanguageServerWin() : findLanguageServerUnix();
+    return IS_WIN ? findLanguageServersWin() : findLanguageServersUnix();
   } catch {
-    return null;
+    return [];
   }
 }
 
-function findLanguageServerUnix() {
+function findLanguageServersUnix() {
   const out = execSync("ps aux | grep -i 'antigravity.*language_server'", { encoding: 'utf-8', timeout: 5000 });
+  const servers = [];
   for (const line of out.split('\n')) {
     if (!line.trim()) continue;
     if (line.includes('grep')) continue;
@@ -59,19 +59,19 @@ function findLanguageServerUnix() {
     const pid = parts[1];
     const csrfMatch = line.match(/--csrf_token\s+([0-9a-f-]+)/);
     const csrfToken = csrfMatch ? csrfMatch[1] : '';
-    if (csrfToken) return { pid, csrfToken };
+    if (csrfToken) servers.push({ pid, csrfToken });
   }
-  return null;
+  return servers;
 }
 
-function findLanguageServerWin() {
+function findLanguageServersWin() {
   // Prefer PowerShell/CIM: wmic is disabled by default on Windows 11 23H2+
   // and removed entirely from 25H2 onward. Fall back to wmic for old/stripped
   // environments without PowerShell. Each probe is independently time-boxed and
   // failures are swallowed, so a missing/hung tool never blocks the next one or
   // the parsers that run after antigravity.
   const out = queryProcessesWinPowerShell() ?? queryProcessesWinWmic();
-  if (!out) return null;
+  if (!out) return [];
   return parseWinProcessList(out);
 }
 
@@ -117,20 +117,20 @@ function queryProcessesWinWmic() {
 
 /**
  * Parse "ProcessId=..." / "CommandLine=..." records (from either PowerShell or
- * wmic /format:list) and return the first language_server that carries a
- * --csrf_token, or null. PowerShell emits an explicit "---" separator per
+ * wmic /format:list) and return each language_server that carries a
+ * --csrf_token. PowerShell emits an explicit "---" separator per
  * process; wmic does not and may emit the two fields in either order, so a
  * record also ends whenever a field we've already captured reappears.
  */
-function parseWinProcessList(out) {
+export function parseWinProcessList(out) {
+  const servers = [];
   let pid = '';
   let cmdLine = '';
   const finish = () => {
     if (pid && cmdLine && !/WMIC\.exe|powershell\.exe|pwsh\.exe/i.test(cmdLine)) {
       const csrfMatch = cmdLine.match(/--csrf_token\s+([0-9a-f-]+)/);
-      if (csrfMatch) return { pid, csrfToken: csrfMatch[1] };
+      if (csrfMatch) servers.push({ pid, csrfToken: csrfMatch[1] });
     }
-    return null;
   };
   const reset = () => { pid = ''; cmdLine = ''; };
   for (const line of out.split('\n')) {
@@ -140,14 +140,14 @@ function parseWinProcessList(out) {
     // Record boundary: explicit "---", or a field that would overwrite one we
     // already hold (next process began without a separator, e.g. wmic output).
     if (trimmed === '---' || (isPid && pid) || (isCmd && cmdLine)) {
-      const found = finish();
-      if (found) return found;
+      finish();
       reset();
     }
     if (isPid) pid = trimmed.slice('ProcessId='.length);
     else if (isCmd) cmdLine = trimmed.slice('CommandLine='.length);
   }
-  return finish();
+  finish();
+  return servers;
 }
 
 function findListeningPorts(pid) {
@@ -296,7 +296,7 @@ function projectFromUri(uri) {
  * List cascade IDs backed by a legacy `.pb` file (App history). `.db` cascades
  * are handled separately via offline parsing.
  */
-function listPbCascades(conversationsDir = CONVERSATIONS_DIR) {
+function listPbCascades(conversationsDir) {
   try {
     const out = [];
     for (const f of readdirSync(conversationsDir)) {
@@ -320,19 +320,29 @@ function modelFromRecord(rec) {
 export async function parse({ extraRoots = [] } = {}) {
   const entries = [];
   const sessionEvents = [];
+  const warnings = [];
   const seenResponseIds = new Set();
 
   const extraDirs = [];
   for (const root of extraRoots) {
     const dirs = antigravityConversationDirs(root);
-    if (!dirs.some(dir => {
+    let found = false;
+    for (const dir of dirs) {
       try {
         readdirSync(dir);
-        return true;
-      } catch {
-        return false;
+        extraDirs.push(dir);
+        found = true;
+      } catch (err) {
+        if (err?.code === 'ENOENT') continue;
+        return {
+          buckets: [],
+          sessions: [],
+          skipped: true,
+          warnings: [`antigravity: 额外根目录读取失败，已保留上次同步数据: ${normalizeExtraRoot(root)}`],
+        };
       }
-    })) {
+    }
+    if (!found) {
       return {
         buckets: [],
         sessions: [],
@@ -340,7 +350,6 @@ export async function parse({ extraRoots = [] } = {}) {
         warnings: [`antigravity: 额外根目录不可用，已跳过本次 Antigravity 同步: ${normalizeExtraRoot(root)}`],
       };
     }
-    extraDirs.push(...dirs);
   }
 
   // ── Path 1: offline .db parsing (App 2.0 + agy CLI, no process needed) ──
@@ -348,14 +357,25 @@ export async function parse({ extraRoots = [] } = {}) {
   const fixtureDirs = process.env.VIBE_USAGE_ANTIGRAVITY_DIRS?.trim();
   const defaultDirs = fixtureDirs
     ? fixtureDirs.split(delimiter).filter(Boolean)
-    : [CONVERSATIONS_DIR, CLI_CONVERSATIONS_DIR];
-  const defaultDirCount = defaultDirs.length;
+    : CONVERSATIONS_DIRS;
+  const strictDirs = new Set(extraDirs);
   const conversationDirs = [...new Set([...defaultDirs, ...extraDirs])];
-  const candidates = conversationDirs.flatMap((dir, dirIndex) => (
-    listDbCascades(dir).map(cascadeId => ({ dir, dirIndex, cascadeId }))
-  ));
+  const candidates = [];
+  for (const dir of conversationDirs) {
+    const strict = strictDirs.has(dir);
+    try {
+      for (const cascadeId of listDbCascades(dir, { strict })) {
+        candidates.push({ dir, cascadeId, strict });
+      }
+    } catch {
+      return {
+        buckets: [], sessions: [], skipped: true,
+        warnings: [`antigravity: 额外根目录读取失败，已保留上次同步数据: ${dir}`],
+      };
+    }
+  }
   const configuredCascadeIds = new Set(
-    candidates.filter(candidate => candidate.dirIndex >= defaultDirCount).map(candidate => candidate.cascadeId),
+    candidates.filter(candidate => candidate.strict).map(candidate => candidate.cascadeId),
   );
   const selectedConfiguredCopies = new Map();
   for (const candidate of candidates) {
@@ -371,58 +391,68 @@ export async function parse({ extraRoots = [] } = {}) {
     if (!previous || size > previous.size) selectedConfiguredCopies.set(candidate.cascadeId, { ...candidate, size });
   }
 
-  for (const { dir, cascadeId } of candidates) {
+  for (const { dir, cascadeId, strict } of candidates) {
     const selected = selectedConfiguredCopies.get(cascadeId);
     if (selected && selected.dir !== dir) continue;
-    const records = readDbUsageRecords(dir, cascadeId);
-    const project = projectFromUri(readDbWorkspaceUri(dir, cascadeId)) || 'unknown';
-    const stepTimestampsByIdx = records.some((rec) => !rec.timestamp || isNaN(rec.timestamp.getTime()))
-      ? readDbStepTimestamps(dir, cascadeId)
-      : new Map();
+    try {
+      const options = { strict };
+      const records = readDbUsageRecords(dir, cascadeId, options);
+      const project = projectFromUri(readDbWorkspaceUri(dir, cascadeId)) || 'unknown';
+      const stepTimestampsByIdx = records.some((rec) => !rec.timestamp || isNaN(rec.timestamp.getTime()))
+        ? readDbStepTimestamps(dir, cascadeId, options)
+        : new Map();
 
-    if (records.length > 0) {
-      dbHandled.add(cascadeId);
-      for (const rec of records) {
-        if (rec.responseId && seenResponseIds.has(rec.responseId)) continue;
-        if (rec.responseId) seenResponseIds.add(rec.responseId);
-        // Gemini 3.7 CLI blobs dropped chatStartMetadata.createdAt (9.4.1)
-        // and modelDisplayName (21). Usage is still in field 4; clock is
-        // recovered from steps.metadata at the same idx.
-        const timestamp = resolveUsageTimestamp(rec, stepTimestampsByIdx);
-        if (!timestamp || isNaN(timestamp.getTime())) continue;
-        entries.push({
+      if (records.length > 0) {
+        dbHandled.add(cascadeId);
+        for (const rec of records) {
+          if (rec.responseId && seenResponseIds.has(rec.responseId)) continue;
+          if (rec.responseId) seenResponseIds.add(rec.responseId);
+          // Gemini 3.7 CLI blobs dropped chatStartMetadata.createdAt (9.4.1)
+          // and modelDisplayName (21). Usage is still in field 4; clock is
+          // recovered from steps.metadata at the same idx.
+          const timestamp = resolveUsageTimestamp(rec, stepTimestampsByIdx);
+          if (!timestamp || isNaN(timestamp.getTime())) continue;
+          entries.push({
+            source: SOURCE,
+            model: modelFromRecord(rec),
+            project,
+            timestamp,
+            inputTokens: toSafeNumber(rec.inputTokens),
+            outputTokens: toSafeNumber(rec.outputTokens),
+            cachedInputTokens: toSafeNumber(rec.cacheReadTokens),
+            reasoningOutputTokens: toSafeNumber(rec.thinkingOutputTokens),
+          });
+        }
+      }
+
+      // Session timing from steps (independent of token usage presence).
+      for (const ev of readDbSessionEvents(dir, cascadeId, options)) {
+        sessionEvents.push({
+          sessionId: cascadeId,
           source: SOURCE,
-          model: modelFromRecord(rec),
           project,
-          timestamp,
-          inputTokens: toSafeNumber(rec.inputTokens),
-          outputTokens: toSafeNumber(rec.outputTokens),
-          cachedInputTokens: toSafeNumber(rec.cacheReadTokens),
-          reasoningOutputTokens: toSafeNumber(rec.thinkingOutputTokens),
+          timestamp: ev.timestamp,
+          role: ev.role,
         });
       }
-    }
-
-    // Session timing from steps (independent of token usage presence).
-    for (const ev of readDbSessionEvents(dir, cascadeId)) {
-      sessionEvents.push({
-        sessionId: cascadeId,
-        source: SOURCE,
-        project,
-        timestamp: ev.timestamp,
-        role: ev.role,
-      });
+    } catch (err) {
+      if (!strict) throw err;
+      return {
+        buckets: [], sessions: [], skipped: true,
+        warnings: [`antigravity: 额外根目录读取失败，已保留上次同步数据: ${dir}`],
+      };
     }
   }
 
   // ── Path 2: RPC fallback, only for legacy .pb cascades not already parsed ──
-  const pbDir = defaultDirs[0] || CONVERSATIONS_DIR;
-  const pbCascades = listPbCascades(pbDir).filter((id) => !dbHandled.has(id));
+  const pbCascades = [...new Set(defaultDirs.flatMap(listPbCascades))]
+    .filter((id) => !dbHandled.has(id));
   if (pbCascades.length > 0) {
-    const server = findLanguageServer();
-    const ports = server ? findListeningPorts(server.pid) : [];
-    const baseUrl = ports.length > 0 ? await probeHttpPort(ports, server.csrfToken) : null;
-    if (baseUrl) {
+    const pending = new Set(pbCascades);
+    for (const server of findLanguageServers()) {
+      const ports = findListeningPorts(server.pid);
+      const baseUrl = ports.length > 0 ? await probeHttpPort(ports, server.csrfToken) : null;
+      if (!baseUrl) continue;
       const rpc = (method, body) =>
         rpcPost(
           baseUrl,
@@ -431,7 +461,7 @@ export async function parse({ extraRoots = [] } = {}) {
           server.csrfToken,
         );
 
-      for (const cascadeId of pbCascades) {
+      for (const cascadeId of pending) {
         let resp;
         try {
           resp = await rpc('GetCascadeTrajectory', { cascadeId });
@@ -440,6 +470,7 @@ export async function parse({ extraRoots = [] } = {}) {
         }
         const trajectory = resp?.trajectory;
         if (!trajectory) continue;
+        pending.delete(cascadeId);
 
         const steps = trajectory.steps || [];
         const metadataList = trajectory.generatorMetadata || [];
@@ -491,11 +522,16 @@ export async function parse({ extraRoots = [] } = {}) {
           sessionEvents.push({ sessionId: cascadeId, source: SOURCE, project, timestamp: ts, role });
         }
       }
+      if (pending.size === 0) break;
+    }
+    if (pending.size > 0) {
+      warnings.push(`antigravity: ${pending.size} 个旧格式会话未能读取，请打开对应的 Antigravity IDE/App 后重新同步；已保留上次同步状态。`);
     }
   }
 
   return {
     buckets: aggregateToBuckets(entries),
     sessions: extractSessions(sessionEvents),
+    ...(warnings.length > 0 ? { skipped: true, warnings } : {}),
   };
 }

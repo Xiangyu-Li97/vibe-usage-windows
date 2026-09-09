@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { aggregateToBuckets, extractSessions } from './aggregate.js';
 import { projectFromCwd, toCount } from './fs-utils.js';
@@ -38,6 +38,19 @@ export function projectFromFirstDir(filePath, sessionsDir) {
   return first.split('-').filter(Boolean).at(-1) || 'unknown';
 }
 
+// Configured stores can overlap: an ancestor and its descendant, or two paths
+// that resolve to the same place through a symlink. Record-level dedup only
+// covers entries carrying an `id`, so the same anonymous record would be
+// counted once per path that reaches it. Collapse on the canonical file path
+// instead, which also folds symlinked duplicates of a single file.
+function canonicalFilePath(filePath) {
+  try {
+    return realpathSync.native(filePath);
+  } catch {
+    return filePath;
+  }
+}
+
 export async function parsePiSessionJsonl({
   source,
   sessionsDirs,
@@ -49,9 +62,14 @@ export async function parsePiSessionJsonl({
   const anonymousEntries = [];
   const eventsById = new Map();
   const anonymousEvents = [];
+  const seenFiles = new Set();
 
   for (const sessionsDir of sessionsDirs) {
     for (const filePath of findJsonlFiles(sessionsDir, includeFile, ctx)) {
+      const canonical = canonicalFilePath(filePath);
+      if (seenFiles.has(canonical)) continue;
+      seenFiles.add(canonical);
+
       let content;
       try {
         content = readFileSync(filePath, 'utf8');
@@ -99,7 +117,10 @@ export async function parsePiSessionJsonl({
         if (message.role !== 'assistant' || !message.usage) continue;
         const usage = message.usage;
         const inputTokens = toCount(usage.input) + toCount(usage.cacheWrite);
-        const reasoningOutputTokens = toCount(usage.reasoningTokens);
+        // Pi's Usage type names this field `reasoning` (a documented subset of
+        // `output`); older/adjacent stores wrote `reasoningTokens`. Reading only
+        // the latter left every Pi reasoning token inside outputTokens.
+        const reasoningOutputTokens = toCount(usage.reasoning ?? usage.reasoningTokens);
         // OMP/Pi usage.output includes reasoning; the shared bucket contract
         // stores non-reasoning output and reasoning separately.
         const outputTokens = Math.max(0, toCount(usage.output) - reasoningOutputTokens);

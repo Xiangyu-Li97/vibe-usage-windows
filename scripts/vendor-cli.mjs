@@ -46,10 +46,20 @@ function vendorFromLocal(localPath) {
       throw new Error(`local checkout missing ${p}/ — wrong path?`);
     }
   }
+  const dirty = execFileSync("git", ["-C", abs, "status", "--porcelain"], {
+    encoding: "utf8",
+  }).trim();
+  if (dirty) {
+    throw new Error("local CLI checkout must be clean so its snapshot is traceable");
+  }
+  const commit = execFileSync("git", ["-C", abs, "rev-parse", "--short=12", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
   fs.rmSync(destDir, { recursive: true, force: true });
   copyDir(path.join(abs, "bin"), path.join(destDir, "bin"));
   copyDir(path.join(abs, "src"), path.join(destDir, "src"));
   fs.copyFileSync(path.join(abs, "package.json"), path.join(destDir, "package.json"));
+  return { source: "git", commit };
 }
 
 function vendorFromNpm() {
@@ -71,6 +81,7 @@ function vendorFromNpm() {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+  return { source: "npm", commit: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -239,12 +250,13 @@ export function getStatePath() {`,
 // ---------------------------------------------------------------------------
 
 const localFlag = process.argv.indexOf("--from-local");
+let sourceMetadata;
 if (localFlag >= 0) {
-  vendorFromLocal(process.argv[localFlag + 1] ?? "../vibe-usage");
+  sourceMetadata = vendorFromLocal(process.argv[localFlag + 1] ?? "../vibe-usage");
 } else {
   // A release must contain the registry's current dist-tag. Never silently
   // fall back to a sibling checkout; --from-local is an explicit dev-only path.
-  vendorFromNpm();
+  sourceMetadata = vendorFromNpm();
 }
 
 applyWindowsPatches();
@@ -253,4 +265,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(destDir, "package.json"), "utf8
 if (pkg.name !== "@vibe-cafe/vibe-usage" || !/^\d+\.\d+\.\d+(?:[-+].+)?$/.test(pkg.version)) {
   throw new Error(`invalid vendored CLI identity: ${pkg.name}@${pkg.version}`);
 }
+fs.writeFileSync(
+  path.join(destDir, ".vibe-usage-source.json"),
+  `${JSON.stringify({ version: pkg.version, ...sourceMetadata }, null, 2)}\n`,
+);
 log(`resolved @${CLI_CHANNEL} to ${pkg.name}@${pkg.version} → ${path.relative(root, destDir)}`);

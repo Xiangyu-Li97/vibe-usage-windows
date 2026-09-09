@@ -121,7 +121,7 @@ function handleConfig(args) {
       const source = args[1];
       const value = args[2];
       if (!source || value === undefined) {
-        console.error('Usage: vibe-usage config add-root <codex|grok|antigravity> <path>');
+        console.error(`Usage: vibe-usage config add-root <${EXTRA_ROOT_SOURCES.join('|')}> <path>`);
         process.exit(1);
       }
       const validation = validateExtraRoot(source, value);
@@ -142,7 +142,7 @@ function handleConfig(args) {
       const source = args[1];
       const value = args[2];
       if (!EXTRA_ROOT_SOURCES.includes(source) || value === undefined) {
-        console.error('Usage: vibe-usage config remove-root <codex|grok|antigravity> <path>');
+        console.error(`Usage: vibe-usage config remove-root <${EXTRA_ROOT_SOURCES.join('|')}> <path>`);
         process.exit(1);
       }
       const config = loadConfig() || {};
@@ -227,6 +227,16 @@ export async function run(rawArgs) {
       await runSummary(args.slice(1));
       break;
     }
+    case 'quota': {
+      const { runQuota } = await import('./quotas/index.js');
+      try {
+        await runQuota(args.slice(1));
+      } catch (error) {
+        console.error(error?.message || String(error));
+        process.exitCode = 1;
+      }
+      break;
+    }
     case 'reset': {
       printSmallHeader();
       const { runReset } = await import('./reset.js');
@@ -282,8 +292,10 @@ export async function run(rawArgs) {
     npx @vibe-cafe/vibe-usage sync --extra-codex-home <path>  Use another Codex Home for this run
     npx @vibe-cafe/vibe-usage summary       Print last 7 days as markdown (cost/tokens/model/project)
     npx @vibe-cafe/vibe-usage summary --days N   Same, but over the last N days (1-90)
+    npx @vibe-cafe/vibe-usage quota discover --json  Detect quota products locally
+    npx @vibe-cafe/vibe-usage quota fetch --product <id> --json  Fetch selected subscription quotas
     npx @vibe-cafe/vibe-usage daemon       Continuous sync (every 30m, foreground)
-    npx @vibe-cafe/vibe-usage daemon install    Install background service (systemd/launchd)
+    npx @vibe-cafe/vibe-usage daemon install    Install background service (systemd/launchd/Task Scheduler)
     npx @vibe-cafe/vibe-usage daemon uninstall  Remove background service
     npx @vibe-cafe/vibe-usage daemon status     Show background service status
     npx @vibe-cafe/vibe-usage daemon stop       Stop background service
@@ -297,7 +309,7 @@ export async function run(rawArgs) {
     npx @vibe-cafe/vibe-usage config get <key>   Get a config value
     npx @vibe-cafe/vibe-usage config set <key> <value>  Set a config value
     npx @vibe-cafe/vibe-usage config set codexExtraHome <path>  Persist another Codex Home
-    npx @vibe-cafe/vibe-usage config add-root <tool> <path>  Add a Codex, Grok, or Antigravity data root
+    npx @vibe-cafe/vibe-usage config add-root <tool> <path>  Add a Codex, Grok, Antigravity, or Pi data root
     npx @vibe-cafe/vibe-usage config remove-root <tool> <path>  Remove an added data root
     npx @vibe-cafe/vibe-usage config roots  Show added data roots as JSON
     npx @vibe-cafe/vibe-usage help         Show this help
