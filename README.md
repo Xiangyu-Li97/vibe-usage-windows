@@ -42,6 +42,10 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 
 ## 从源码构建
 
+本地外测最简单的方式：解压源码包后双击 `BUILD-WINDOWS-EXTERNAL-TEST.cmd`。首次运行可能通过 winget 安装 Node 22、Rust 1.88、Visual C++ Build Tools 与 Windows SDK；完成后安装包会出现在源码包根目录。外测包使用独立的 “Vibe Usage Test” 应用身份，不会覆盖已安装的正式版。
+
+也可以手动运行：
+
 ```powershell
 git clone https://github.com/vibe-cafe/vibe-usage-windows.git
 cd vibe-usage-windows

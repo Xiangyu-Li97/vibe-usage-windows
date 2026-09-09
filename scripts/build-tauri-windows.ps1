@@ -5,6 +5,9 @@ $buildArgs = @("tauri", "build", "--bundles", $bundles)
 if ($env:TAURI_FEATURES) {
   $buildArgs += @("--features", $env:TAURI_FEATURES)
 }
+if ($env:VIBE_USAGE_BUILD_KIND -eq "external-test") {
+  $buildArgs += @("--config", "src-tauri/tauri.external-test.conf.json")
+}
 $certThumbprint = $env:WINDOWS_CODESIGN_CERT_THUMBPRINT
 $useSignPath = [bool]$env:SIGNPATH_API_TOKEN
 $allowUntrustedSignature = $env:SIGNPATH_ALLOW_UNTRUSTED_SIGNATURE -match '^(1|true|yes|on)$'
