@@ -10,13 +10,15 @@ import { formatRelativeTime } from "../lib/formatters";
 export function FooterBar() {
   const state = useAppState();
   const { syncState, updateInfo } = state;
-  const syncing = syncState.status === "syncing";
+  const syncing = state.configured && syncState.status === "syncing";
 
   return (
     <div className="flex items-center">
       {/* Sync status */}
       <div className="flex min-w-0 items-center gap-1.5">
-        {syncing ? (
+        {!state.configured ? (
+          <CheckCircle2 size={12} color="#33CC80" fill="#33CC80" stroke="#0A0A0A" className="shrink-0" />
+        ) : syncing ? (
           <div className="spinner h-3 w-3 shrink-0" />
         ) : syncState.status === "error" ? (
           <AlertCircle size={12} color="#EF4444" fill="#EF4444" stroke="#0A0A0A" className="shrink-0" />
@@ -24,7 +26,9 @@ export function FooterBar() {
           <CheckCircle2 size={12} color="#33CC80" fill="#33CC80" stroke="#0A0A0A" className="shrink-0" />
         )}
         <span className="min-w-0 truncate text-[11px] text-t-tertiary">
-          {syncing
+          {!state.configured
+            ? "本地配额可直接使用"
+            : syncing
             ? "同步中..."
             : syncState.status === "error"
               ? (syncState.message ?? "同步失败")
@@ -52,8 +56,8 @@ export function FooterBar() {
         className="flex shrink-0 items-center gap-1 text-[11px] text-t-muted disabled:opacity-50"
         disabled={syncing}
         onClick={() => {
-          // CLI sync upload + rate-limit refresh are independent — fire both.
-          void state.triggerSync();
+          // Account sync is optional; local quota refresh always remains available.
+          if (state.configured) void state.triggerSync();
           void state.refreshRateLimits(true);
         }}
       >

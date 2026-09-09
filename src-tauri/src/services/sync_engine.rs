@@ -94,6 +94,16 @@ fn cli_command(app: &AppHandle, args: &[&str]) -> Result<tokio::process::Command
     Ok(cmd)
 }
 
+/// Build a command for the typed quota bridge. Arguments are owned by the
+/// caller but copied into Command before this function returns.
+pub(super) fn quota_command(
+    app: &AppHandle,
+    args: &[String],
+) -> Result<tokio::process::Command, String> {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    cli_command(app, &borrowed)
+}
+
 /// Run a short config command against the same bundled CLI and config directory
 /// used by sync.
 pub async fn run_config_command(app: &AppHandle, args: &[&str]) -> Result<String, String> {

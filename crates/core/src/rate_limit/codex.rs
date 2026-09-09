@@ -35,10 +35,12 @@ pub fn read_from(sessions_dir: &Path, now: f64) -> ProviderRateLimit {
         }
         return ProviderRateLimit {
             provider: RateLimitProvider::Codex,
+            meters: Vec::new(),
             five_hour: snapshot.five_hour,
             seven_day: snapshot.seven_day,
             plan_label: snapshot.plan_label,
             data_as_of: None,
+            fetched_at: None,
             five_hour_not_enforced: false,
             reset_credits_count: None,
             status: RateLimitStatus::Ok,

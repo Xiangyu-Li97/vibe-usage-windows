@@ -10,7 +10,9 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 
 ## 配置
 
-1. 打开 Vibe Usage，点击「登录并链接数据」
+本机订阅配额无需 Vibe Usage 账号即可使用。若还需要跨设备 Token/费用统计：
+
+1. 打开 Vibe Usage，在订阅配额下方点击「登录并链接数据」
 2. 浏览器自动打开 vibecafe.ai 审批页面 — 登录后确认验证码与 app 一致
 3. 点击「确认链接」 — app 自动拿到 Key 并开始同步
 
@@ -21,12 +23,15 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 系统托盘常驻，点击托盘图标打开用量面板
 - 后台每 30 分钟自动同步数据，也可手动「更新数据」
 - 弹出窗口查看费用、总 Token、缓存 Token、趋势图表
-- **订阅配额监控**：可分别显示 Codex / Claude Code 的 5 小时 / 7 天 token 配额，悬停查看消耗 vs 时间对比
+- **订阅配额监控**：自动检测 Codex、Claude Code、Kimi Code、ZCode、Grok 与 Cursor，并允许最多选择两个显示；Cursor 当前明确标记为待接入
+- Codex / Claude 使用只读原生适配；Kimi Code 使用官方 CLI 登录；Grok 只读官方 CLI 的结构化配额日志；ZCode 使用用户明确提供的 BigModel（国内）或 Z.ai（海外）Coding Plan Key
+- ZCode Key 只保存在当前 Windows 用户的 Credential Manager 中，不写入设置文件、不回显，也不会跨区域试发
 - 支持今天 / 24H / 7D / 30D / 90D / 自定义日期，以及终端 / 工具 / 模型 / 项目筛选
 - 可在托盘图标显示今日费用和 Token 数
 - 内置 [@vibe-cafe/vibe-usage](https://github.com/vibe-cafe/vibe-usage) CLI 与 Node 运行时，开箱即用，无需安装 Node.js
 - 可在设置中为 Codex、Grok、Antigravity / AGY 添加多个 Multica 或其他隔离运行时目录；各工具默认目录仍会继续扫描
 - 订阅配额读取对齐 macOS：Codex 优先读取实时官方用量、离线回退会话日志；Claude 使用无工具、无提示、无会话持久化的只读探测，不修改 Claude 状态栏配置
+- workflow_dispatch 生成的外测包可导出严格脱敏的配额诊断；正式 tag Release 不编译诊断实现，设置入口也不会显示
 - 发布构建从 npm `latest` 解析 CLI，再把解析出的确定版本内置进安装包；用户机器不会在运行时拉取或执行未随安装包验证的新代码
 - 支持开机自启动、单实例、应用内检查更新
 
@@ -65,7 +70,7 @@ pnpm tauri dev
 
 ```bash
 pnpm test                # 前端单测（formatters/aggregate/modelFamilies，与 Swift 实现对拍）
-cargo test --workspace   # Rust 单测（config/codex 配额/claude 配额/statusline hook/托盘字体渲染）
+cargo test --workspace   # Rust 单测（配置迁移、产品发现/选择、配额桥、凭据边界等）
 ```
 
 ## 架构
@@ -78,8 +83,10 @@ Rust (Tauri 2)
   ├─ api_client          GET /api/usage、设备链接 code/poll
   ├─ sync_engine         spawn node <内置CLI> sync（120s 超时、CREATE_NO_WINDOW）
   ├─ scheduler           30 分钟定时同步 + 24h 更新检查
-  ├─ rate_limit          Codex rollout JSONL / Claude statusline 捕获文件
-  ├─ statusline_hook     写入 ~/.claude/settings.json 的 Node 包装器（自愈/备份/还原）
+  ├─ rate_limits         Codex / Claude 原生读取 + Kimi / ZCode / Grok typed CLI bridge
+  ├─ quota_product       只读本地发现 + 两项选择策略（Cursor 待接入）
+  ├─ zcode_credentials   Windows Credential Manager 安全存储
+  ├─ statusline_hook     仅安全退休旧版本能够证明归属的 Claude hook
   └─ updater             latest.json + SHA-256 校验 + NSIS 静默升级
 内置资源
   ├─ resources/cli       vendored @vibe-cafe/vibe-usage（含 Windows 补丁, scripts/vendor-cli.mjs）

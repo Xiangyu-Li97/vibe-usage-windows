@@ -208,6 +208,7 @@ fn parse_payload(root: &Value, now: f64) -> Option<ProviderRateLimit> {
     }
     Some(ProviderRateLimit {
         provider: RateLimitProvider::ClaudeCode,
+        meters: Vec::new(),
         five_hour,
         seven_day,
         plan_label: root
@@ -216,6 +217,7 @@ fn parse_payload(root: &Value, now: f64) -> Option<ProviderRateLimit> {
             .filter(|s| !s.is_empty())
             .map(capitalize),
         data_as_of: Some(now),
+        fetched_at: Some(now),
         five_hour_not_enforced: false,
         reset_credits_count: None,
         status: RateLimitStatus::Ok,
@@ -267,10 +269,12 @@ fn cached_snapshot_from(path: &Path, now: f64) -> Option<ProviderRateLimit> {
     }
     Some(ProviderRateLimit {
         provider: RateLimitProvider::ClaudeCode,
+        meters: Vec::new(),
         five_hour,
         seven_day,
         plan_label: None,
         data_as_of: Some(fetched_at),
+        fetched_at: Some(fetched_at),
         five_hour_not_enforced: false,
         reset_credits_count: None,
         status: RateLimitStatus::Ok,

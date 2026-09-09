@@ -56,6 +56,10 @@ jobs:
         env:
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
           SIGNPATH_ALLOW_UNTRUSTED_SIGNATURE: "true"
+          VIBE_USAGE_APP_COMMIT: ${{ github.sha }}
+          VIBE_USAGE_APP_BUILD: ${{ github.run_number }}
+          VIBE_USAGE_BUILD_KIND: ${{ github.event_name == 'workflow_dispatch' && 'external-test' || 'release' }}
+          TAURI_FEATURES: ${{ github.event_name == 'workflow_dispatch' && 'external-test-diagnostics' || '' }}
         run: ./scripts/build-tauri-windows.ps1
 
       - name: Collect signed artifacts
@@ -110,7 +114,7 @@ jobs:
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
+          name: windows-installer-external-test
           path: ${{ steps.artifacts.outputs.installer }}
 
       - name: Upload updater manifest artifact

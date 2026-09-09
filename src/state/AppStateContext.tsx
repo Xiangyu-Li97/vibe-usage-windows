@@ -22,6 +22,8 @@ import {
   FilterState,
   fixedDayCount,
   ProviderRateLimit,
+  QuotaProduct,
+  RateLimitProvider,
   startCutoff,
   SyncState,
   TimeRange,
@@ -29,6 +31,7 @@ import {
   UsageBucket,
   UsageQuery,
   UsageSession,
+  ZCodeCredentialStatus,
 } from "../lib/types";
 import { localDayKey } from "../lib/formatters";
 import { invoke } from "@tauri-apps/api/core";
@@ -62,14 +65,18 @@ interface AppStateValue {
 
   syncState: SyncState;
   rateLimits: ProviderRateLimit[];
+  quotaProducts: QuotaProduct[];
+  zCodeCredentialStatus: ZCodeCredentialStatus;
+  isRefreshingRateLimits: boolean;
+  quotaSelectionError: string | null;
   updateInfo: UpdateInfo | null;
 
   markConfigured: () => Promise<void>;
   fetchUsageData: () => Promise<void>;
   triggerSync: () => Promise<void>;
   refreshRateLimits: (force: boolean) => Promise<void>;
-  enableClaudeRateLimit: () => Promise<void>;
-  claudeRateLimitInstallError: string | null;
+  setQuotaProductSelected: (provider: RateLimitProvider, selected: boolean) => Promise<void>;
+  rediscoverQuotaProducts: () => Promise<void>;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -79,6 +86,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   showTokensInTray: false,
   codexRateLimitEnabled: true,
   claudeRateLimitEnabled: false,
+  selectedQuotaProductIds: [],
+  quotaSelectionInitialized: false,
+  zCodeQuotaRegion: "bigModel",
+};
+
+const EMPTY_ZCODE_CREDENTIAL_STATUS: ZCodeCredentialStatus = {
+  bigModelConfigured: false,
+  zAiConfigured: false,
 };
 
 export function useAppState(): AppStateValue {
@@ -114,8 +129,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const [syncState, setSyncState] = useState<SyncState>({ status: "idle" });
   const [rateLimits, setRateLimits] = useState<ProviderRateLimit[]>([]);
+  const [quotaProducts, setQuotaProducts] = useState<QuotaProduct[]>([]);
+  const [zCodeCredentialStatus, setZCodeCredentialStatus] =
+    useState<ZCodeCredentialStatus>(EMPTY_ZCODE_CREDENTIAL_STATUS);
+  const [isRefreshingRateLimits, setIsRefreshingRateLimits] = useState(false);
+  const [quotaSelectionError, setQuotaSelectionError] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [claudeRateLimitInstallError, setClaudeError] = useState<string | null>(null);
 
   const lastFetchTime = useRef<number | null>(null);
   const loadingRef = useRef(false);
@@ -194,20 +213,41 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   }, [fetchUsageData]);
 
   const refreshRateLimits = useCallback(async (force: boolean) => {
+    setIsRefreshingRateLimits(true);
     try {
       setRateLimits(await api.getRateLimits(force));
     } catch (err) {
       console.warn("rate limits:", err);
+    } finally {
+      setIsRefreshingRateLimits(false);
     }
   }, []);
 
-  const enableClaudeRateLimit = useCallback(async () => {
+  const setQuotaProductSelected = useCallback(
+    async (provider: RateLimitProvider, selected: boolean) => {
+      setQuotaSelectionError(null);
+      setIsRefreshingRateLimits(true);
+      try {
+        const nextRateLimits = await api.setQuotaProductSelected(provider, selected);
+        const nextSettings = await api.getSettings();
+        setSettings(nextSettings);
+        setRateLimits(nextRateLimits);
+      } catch (err) {
+        setQuotaSelectionError(String(err));
+      } finally {
+        setIsRefreshingRateLimits(false);
+      }
+    },
+    [],
+  );
+
+  const rediscoverQuotaProducts = useCallback(async () => {
     try {
-      setClaudeError(null);
-      setRateLimits(await api.enableClaudeRateLimit());
-      setSettings((current) => ({ ...current, claudeRateLimitEnabled: true }));
+      setQuotaSelectionError(null);
+      setQuotaProducts(await api.getQuotaProducts());
+      setSettings(await api.getSettings());
     } catch (err) {
-      setClaudeError(String(err));
+      setQuotaSelectionError(String(err));
     }
   }, []);
 
@@ -249,15 +289,21 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         setStatus(s);
         setConfigured(s.configured);
         configuredRef.current = s.configured;
-        const [nextSettings, nextSyncState, nextRateLimits] = await Promise.all([
+        // Discovery owns the one-time default selection, so it must finish
+        // before settings and rate limits are read.
+        const nextQuotaProducts = await api.getQuotaProducts();
+        const [nextSettings, nextSyncState, nextRateLimits, nextZCodeStatus] = await Promise.all([
           api.getSettings(),
           api.getSyncState(),
           api.getRateLimits(false),
+          api.getZCodeCredentialStatus().catch(() => EMPTY_ZCODE_CREDENTIAL_STATUS),
         ]);
         if (disposed) return;
+        setQuotaProducts(nextQuotaProducts);
         setSettings(nextSettings);
         setSyncState(nextSyncState);
         setRateLimits(nextRateLimits);
+        setZCodeCredentialStatus(nextZCodeStatus);
         if (s.configured) {
           await fetchUsageData();
         }
@@ -285,7 +331,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       onUpdateAvailable((u) => setUpdateInfo(u)),
       onSettingsUpdated((nextSettings) => {
         setSettings(nextSettings);
-        void refreshRateLimits(true);
+        void api.getZCodeCredentialStatus().then(setZCodeCredentialStatus).catch(() => {});
+        void refreshRateLimits(false);
       }),
       onPanelShown(() => {
         // Config may have changed while hidden (relink / reset from settings).
@@ -294,7 +341,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           setConfigured(s.configured);
           configuredRef.current = s.configured;
         });
-        void api.getSettings().then(setSettings);
+        void api.getQuotaProducts().then((products) => {
+          setQuotaProducts(products);
+          void api.getSettings().then(setSettings);
+        });
+        void api.getZCodeCredentialStatus().then(setZCodeCredentialStatus).catch(() => {});
         void fetchUsageDataIfNeeded();
         void refreshRateLimits(false);
       }),
@@ -369,13 +420,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setFilters,
     syncState,
     rateLimits,
+    quotaProducts,
+    zCodeCredentialStatus,
+    isRefreshingRateLimits,
+    quotaSelectionError,
     updateInfo,
     markConfigured,
     fetchUsageData,
     triggerSync,
     refreshRateLimits,
-    enableClaudeRateLimit,
-    claudeRateLimitInstallError,
+    setQuotaProductSelected,
+    rediscoverQuotaProducts,
   };
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

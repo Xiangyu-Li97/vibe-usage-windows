@@ -2,6 +2,9 @@ $ErrorActionPreference = "Stop"
 
 $bundles = if ($env:TAURI_BUNDLES) { $env:TAURI_BUNDLES } else { "nsis" }
 $buildArgs = @("tauri", "build", "--bundles", $bundles)
+if ($env:TAURI_FEATURES) {
+  $buildArgs += @("--features", $env:TAURI_FEATURES)
+}
 $certThumbprint = $env:WINDOWS_CODESIGN_CERT_THUMBPRINT
 $useSignPath = [bool]$env:SIGNPATH_API_TOKEN
 $allowUntrustedSignature = $env:SIGNPATH_ALLOW_UNTRUSTED_SIGNATURE -match '^(1|true|yes|on)$'

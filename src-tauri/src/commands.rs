@@ -1,12 +1,16 @@
 //! Tauri commands — the app's entire invoke surface (see src/lib/api.ts).
 
 use crate::services::api_client::{self, UsageQuery};
-use crate::services::{auto_launch, device_link, rate_limits, scheduler, sync_engine, updater};
+use crate::services::{
+    auto_launch, device_link, rate_limits, scheduler, sync_engine, test_diagnostics, updater,
+    zcode_credentials,
+};
 use crate::state::{AppCtx, AppSettings, SyncState, UpdateInfo};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-use vibe_core::ProviderRateLimit;
+use vibe_core::quota_product::{self, QuotaProduct, ZCodeQuotaRegion};
+use vibe_core::{ProviderRateLimit, RateLimitProvider};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +20,7 @@ pub struct AppStatus {
     version: String,
     is_dev: bool,
     runtime_available: bool,
+    test_diagnostics_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key_display: Option<String>,
 }
@@ -53,6 +58,7 @@ pub fn get_app_status(app: AppHandle) -> AppStatus {
         version: app.package_info().version.to_string(),
         is_dev: crate::state::IS_DEV,
         runtime_available: sync_engine::detect_runtime(&app).is_some(),
+        test_diagnostics_available: test_diagnostics::available(),
         api_key_display,
     }
 }
@@ -138,6 +144,147 @@ pub async fn enable_claude_rate_limit(app: AppHandle) -> Result<Vec<ProviderRate
     rate_limits::enable_claude(&app).await
 }
 
+fn initial_quota_selection(
+    products: &[QuotaProduct],
+    zcode_configured: bool,
+) -> Vec<RateLimitProvider> {
+    let eligible = products
+        .iter()
+        .filter(|product| product.provider != RateLimitProvider::ZCode || zcode_configured)
+        .cloned()
+        .collect::<Vec<_>>();
+    quota_product::initial_selection(&eligible)
+}
+
+#[tauri::command]
+pub fn get_quota_products(app: AppHandle) -> Vec<QuotaProduct> {
+    let products = quota_product::discover();
+    test_diagnostics::record_discovery(
+        products
+            .iter()
+            .filter(|product| product.is_detected)
+            .map(|product| product.provider)
+            .collect(),
+    );
+    let ctx = app.state::<AppCtx>();
+    let initialized = ctx.settings.lock().unwrap().quota_selection_initialized;
+    if !initialized {
+        let region = ctx.settings.lock().unwrap().z_code_quota_region;
+        let zcode_configured = zcode_credentials::load(region).ok().flatten().is_some();
+        // A detected ZCode installation cannot yield quota without a key the
+        // user explicitly gave this app, so it must not consume a default slot.
+        let initial = initial_quota_selection(&products, zcode_configured);
+        ctx.settings.lock().unwrap().set_quota_selection(initial);
+        ctx.save_settings();
+        let settings = ctx.settings.lock().unwrap().clone();
+        test_diagnostics::record_selection_initialized(settings.selected_quota_product_ids.clone());
+        let _ = app.emit("settings-updated", &settings);
+    }
+    products
+}
+
+#[tauri::command]
+pub async fn set_quota_product_selected(
+    app: AppHandle,
+    provider: RateLimitProvider,
+    selected: bool,
+) -> Result<Vec<ProviderRateLimit>, String> {
+    {
+        let ctx = app.state::<AppCtx>();
+        let mut settings = ctx.settings.lock().unwrap();
+        let next = quota_product::update_selection(
+            &settings.selected_quota_product_ids,
+            provider,
+            selected,
+        );
+        settings.set_quota_selection(next);
+        drop(settings);
+        ctx.save_settings();
+        let settings = ctx.settings.lock().unwrap().clone();
+        test_diagnostics::record_selection_changed(settings.selected_quota_product_ids.clone());
+        let _ = app.emit("settings-updated", &settings);
+    }
+    Ok(rate_limits::get_rate_limits(&app, true).await)
+}
+
+#[tauri::command]
+pub fn get_zcode_credential_status() -> Result<zcode_credentials::ZCodeCredentialStatus, String> {
+    zcode_credentials::status()
+}
+
+#[tauri::command]
+pub async fn set_zcode_quota_region(
+    app: AppHandle,
+    region: ZCodeQuotaRegion,
+) -> Result<Vec<ProviderRateLimit>, String> {
+    let configured = zcode_credentials::load(region)?.is_some();
+    {
+        let ctx = app.state::<AppCtx>();
+        let mut settings = ctx.settings.lock().unwrap();
+        let previous_selection = settings.selected_quota_product_ids.clone();
+        settings.z_code_quota_region = region;
+        if !configured
+            && settings
+                .selected_quota_product_ids
+                .contains(&RateLimitProvider::ZCode)
+        {
+            let next = quota_product::update_selection(
+                &settings.selected_quota_product_ids,
+                RateLimitProvider::ZCode,
+                false,
+            );
+            settings.set_quota_selection(next);
+        }
+        drop(settings);
+        ctx.save_settings();
+        let settings = ctx.settings.lock().unwrap().clone();
+        if settings.selected_quota_product_ids != previous_selection {
+            test_diagnostics::record_selection_changed(settings.selected_quota_product_ids.clone());
+        }
+        let _ = app.emit("settings-updated", &settings);
+    }
+    Ok(rate_limits::get_rate_limits(&app, true).await)
+}
+
+#[tauri::command]
+pub async fn set_zcode_api_key(
+    app: AppHandle,
+    region: ZCodeQuotaRegion,
+    api_key: Option<String>,
+) -> Result<Vec<ProviderRateLimit>, String> {
+    let configured = api_key
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    zcode_credentials::store(region, api_key.as_deref())?;
+    {
+        let ctx = app.state::<AppCtx>();
+        let mut settings = ctx.settings.lock().unwrap();
+        let previous_selection = settings.selected_quota_product_ids.clone();
+        settings.z_code_quota_region = region;
+        if !configured
+            && settings
+                .selected_quota_product_ids
+                .contains(&RateLimitProvider::ZCode)
+        {
+            let next = quota_product::update_selection(
+                &settings.selected_quota_product_ids,
+                RateLimitProvider::ZCode,
+                false,
+            );
+            settings.set_quota_selection(next);
+        }
+        drop(settings);
+        ctx.save_settings();
+        let settings = ctx.settings.lock().unwrap().clone();
+        if settings.selected_quota_product_ids != previous_selection {
+            test_diagnostics::record_selection_changed(settings.selected_quota_product_ids.clone());
+        }
+        let _ = app.emit("settings-updated", &settings);
+    }
+    Ok(rate_limits::get_rate_limits(&app, true).await)
+}
+
 // -- Settings -------------------------------------------------------------------
 
 #[tauri::command]
@@ -146,7 +293,11 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
 }
 
 #[tauri::command]
-pub fn set_settings(app: AppHandle, settings: AppSettings) {
+pub fn set_settings(app: AppHandle, mut settings: AppSettings) {
+    if settings.quota_selection_initialized {
+        let selection = settings.selected_quota_product_ids.clone();
+        settings.set_quota_selection(selection);
+    }
     {
         let ctx = app.state::<AppCtx>();
         let mut current = ctx.settings.lock().unwrap();
@@ -220,6 +371,7 @@ pub fn open_settings_impl(app: &AppHandle) {
     if let Some(existing) = app.get_webview_window("settings") {
         let _ = existing.show();
         let _ = existing.set_focus();
+        let _ = app.emit("settings-shown", ());
         return;
     }
     // The packaged app declares a hidden settings window in tauri.conf.json so
@@ -234,8 +386,13 @@ pub fn open_settings_impl(app: &AppHandle) {
         .maximizable(false)
         .center()
         .build();
-    if let Err(e) = result {
-        log::error!("settings window: {e}");
+    match result {
+        Ok(_) => {
+            let _ = app.emit("settings-shown", ());
+        }
+        Err(error) => {
+            log::error!("settings window: {error}");
+        }
     }
 }
 
@@ -252,6 +409,15 @@ pub fn hide_panel(app: AppHandle) {
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+#[tauri::command]
+pub fn export_test_diagnostics(destination: String) -> Result<(), String> {
+    let destination = destination.trim();
+    if destination.is_empty() {
+        return Err("请选择导出位置".into());
+    }
+    test_diagnostics::export(std::path::Path::new(destination))
 }
 
 // -- Tray ------------------------------------------------------------------------
@@ -281,7 +447,9 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_extra_root_source;
+    use super::{initial_quota_selection, validate_extra_root_source};
+    use vibe_core::quota_product::{QuotaProduct, QuotaProductAvailability};
+    use vibe_core::RateLimitProvider;
 
     #[test]
     fn extra_root_sources_are_allowlisted() {
@@ -289,5 +457,23 @@ mod tests {
         assert!(validate_extra_root_source("grok").is_ok());
         assert!(validate_extra_root_source("antigravity").is_ok());
         assert!(validate_extra_root_source("cursor").is_err());
+    }
+
+    #[test]
+    fn unconfigured_zcode_does_not_block_a_later_default_slot() {
+        let ready = |provider| QuotaProduct {
+            provider,
+            availability: QuotaProductAvailability::Ready,
+            is_detected: true,
+        };
+        let products = vec![
+            ready(RateLimitProvider::KimiCode),
+            ready(RateLimitProvider::ZCode),
+            ready(RateLimitProvider::Grok),
+        ];
+        assert_eq!(
+            initial_quota_selection(&products, false),
+            vec![RateLimitProvider::KimiCode, RateLimitProvider::Grok]
+        );
     }
 }
