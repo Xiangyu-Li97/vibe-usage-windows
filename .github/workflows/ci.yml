@@ -48,5 +48,8 @@ jobs:
       - name: Rust tests
         run: cargo test --workspace
 
+      - name: External-test update isolation
+        run: cargo test --workspace --features external-test-diagnostics
+
       - name: Rust check (app)
         run: cargo check -p vibe-usage-app

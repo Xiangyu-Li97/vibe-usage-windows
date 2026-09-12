@@ -32,7 +32,7 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 可在设置中为 Codex、Grok、Antigravity / AGY 添加多个 Multica 或其他隔离运行时目录；各工具默认目录仍会继续扫描
 - 订阅配额读取对齐 macOS：Codex 优先读取实时官方用量、离线回退会话日志；Claude 使用无工具、无提示、无会话持久化的只读探测，不修改 Claude 状态栏配置
 - workflow_dispatch 生成的外测包可导出严格脱敏的配额诊断；正式 tag Release 不编译诊断实现，设置入口也不会显示
-- 发布构建从 npm `latest` 解析 CLI，再把解析出的确定版本内置进安装包；用户机器不会在运行时拉取或执行未随安装包验证的新代码
+- 发布构建使用代码库中已审查的固定 CLI 快照；本分支对齐 CLI `0.10.32` / `4ab7b98e3e6c`，并保留 Windows 补丁。构建期间不会重新拉取 npm `latest`
 - 支持开机自启动、单实例、应用内检查更新
 
 ## 系统要求
@@ -43,6 +43,8 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 ## 从源码构建
 
 本地外测最简单的方式：解压源码包后双击 `BUILD-WINDOWS-EXTERNAL-TEST.cmd`。首次运行可能通过 winget 安装 Node 22、Rust 1.88、Visual C++ Build Tools 与 Windows SDK；完成后安装包会出现在源码包根目录。外测包使用独立的 “Vibe Usage Test” 应用身份，不会覆盖已安装的正式版。
+
+外测包不启动正式版更新轮询，设置中明确显示不检查更新，后端也拒绝检查和安装更新命令。外测身份不等于账户数据全部隔离：Release 外测仍使用现有 Vibe Usage 账号配置和正式 ZCode 凭据目标，测试前请保留现有状态。完整任务单见 [Windows 原生验收](docs/WINDOWS_ACCEPTANCE.md)。
 
 也可以手动运行：
 
@@ -67,7 +69,7 @@ pnpm run release:windows:test  # 产出带脱敏诊断的本地外测安装包�
 开发调试：
 
 ```powershell
-node scripts/vendor-cli.mjs    # 准备内置 CLI（一次即可）
+node scripts/check-version.mjs # 确认已内置的受测 CLI，不要在验收中替换为 npm latest
 pnpm tauri dev
 ```
 
@@ -76,7 +78,13 @@ pnpm tauri dev
 ```bash
 pnpm test                # 前端单测（formatters/aggregate/modelFamilies，与 Swift 实现对拍）
 cargo test --workspace   # Rust 单测（配置迁移、产品发现/选择、配额桥、凭据边界等）
+cargo test --workspace --features external-test-diagnostics # 外测更新隔离
+node scripts/test-vendored-cli.mjs --tests-from ../vibe-usage # 对实际内置 CLI 运行同提交的上游测试
 ```
+
+最后一项需要完整的 CLI Git checkout，HEAD 必须对应内置快照的来源提交；npm 包没有 `test/` 目录，直接在里面运行 `node --test` 得到 0 项不能作为验收通过。
+
+当前“活跃时长”按会话累加 `activeSeconds`，并行会话会重复计时，Codex 单轮内也没有空闲截断；它不是人的实际使用时长。此轮不改变共享统计算法，跨端口径与历史数据处理另行评审。
 
 ## 架构
 

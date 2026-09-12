@@ -159,4 +159,47 @@ mod tests {
         );
         assert_eq!(ZCodeQuotaRegion::ZAi.environment_key(), "Z_AI_API_KEY");
     }
+
+    /// Opt-in native acceptance with disposable dummy values, never the
+    /// production credential targets returned by target(region).
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "explicit Windows Credential Manager acceptance"]
+    fn credential_manager_roundtrip_isolated() {
+        let namespace = format!(
+            "ai.vibecafe.vibe-usage.acceptance/{}/{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        struct Cleanup([String; 2]);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for key in &self.0 {
+                    let _ = platform::delete(key);
+                }
+            }
+        }
+        let cleanup = Cleanup([format!("{namespace}/bigmodel"), format!("{namespace}/zai")]);
+        let [domestic, overseas] = &cleanup.0;
+        assert_eq!(platform::load(domestic).unwrap(), None);
+        assert_eq!(platform::load(overseas).unwrap(), None);
+        platform::store(domestic, "acceptance-domestic-fixture").unwrap();
+        platform::store(overseas, "acceptance-overseas-fixture").unwrap();
+        platform::store(domestic, "acceptance-updated-fixture").unwrap();
+        assert_eq!(
+            platform::load(domestic).unwrap().as_deref(),
+            Some("acceptance-updated-fixture")
+        );
+        assert_eq!(
+            platform::load(overseas).unwrap().as_deref(),
+            Some("acceptance-overseas-fixture")
+        );
+        platform::delete(domestic).unwrap();
+        platform::delete(overseas).unwrap();
+        assert_eq!(platform::load(domestic).unwrap(), None);
+        assert_eq!(platform::load(overseas).unwrap(), None);
+    }
 }

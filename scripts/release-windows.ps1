@@ -40,15 +40,20 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 pnpm test
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
+# tauri-build validates bundled resources even for cargo test on a fresh clone.
+node scripts/fetch-node.mjs
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
 cargo test --workspace
 if ($LASTEXITCODE -ne 0) { exit 1 }
+if ($ExternalTest) {
+  cargo test --workspace --features external-test-diagnostics
+  if ($LASTEXITCODE -ne 0) { exit 1 }
+}
 
 # Release the reviewed, checked-in CLI snapshot rather than replacing it with
 # npm's moving latest tag after tests have started.
 node scripts/check-version.mjs
-if ($LASTEXITCODE -ne 0) { exit 1 }
-
-node scripts/fetch-node.mjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 & (Join-Path $PSScriptRoot "build-tauri-windows.ps1")

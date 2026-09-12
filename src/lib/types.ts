@@ -246,6 +246,7 @@ export interface AppStatus {
   isDev: boolean;
   runtimeAvailable: boolean;
   testDiagnosticsAvailable: boolean;
+  updatesAvailable: boolean;
   apiKeyDisplay?: string | null;
 }
 

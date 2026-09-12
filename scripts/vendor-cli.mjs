@@ -144,9 +144,9 @@ function applyWindowsPatches() {
   ]);
 
   // 3. OpenCode on Windows stores data under %LOCALAPPDATA%\\opencode.
-  patchFile("src/parsers/opencode.js", [
+  patchFile("src/opencode-roots.js", [
     [
-      "const DATA_DIR = join(homedir(), '.local', 'share', 'opencode');",
+      "export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}) {",
       `function resolveOpencodeDataDir() {
   const xdg = join(homedir(), '.local', 'share', 'opencode');
   if (process.platform === 'win32' && !existsSync(xdg) && process.env.LOCALAPPDATA) {
@@ -155,8 +155,19 @@ function applyWindowsPatches() {
   }
   return xdg;
 }
-const DATA_DIR = resolveOpencodeDataDir();`,
+
+export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}) {`,
       "opencode windows data dir",
+    ],
+    [
+      "import { accessSync, constants, realpathSync, statSync } from 'node:fs';",
+      "import { accessSync, constants, existsSync, realpathSync, statSync } from 'node:fs';",
+      "opencode windows directory existence",
+    ],
+    [
+      ": [join(homedir(), '.local', 'share', 'opencode')];",
+      ": [resolveOpencodeDataDir()];",
+      "opencode preserve override and extra roots",
     ],
   ]);
 

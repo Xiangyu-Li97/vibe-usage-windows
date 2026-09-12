@@ -21,6 +21,7 @@ pub struct AppStatus {
     is_dev: bool,
     runtime_available: bool,
     test_diagnostics_available: bool,
+    updates_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key_display: Option<String>,
 }
@@ -59,6 +60,7 @@ pub fn get_app_status(app: AppHandle) -> AppStatus {
         is_dev: crate::state::IS_DEV,
         runtime_available: sync_engine::detect_runtime(&app).is_some(),
         test_diagnostics_available: test_diagnostics::available(),
+        updates_available: updater::available(),
         api_key_display,
     }
 }

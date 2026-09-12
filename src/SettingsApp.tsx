@@ -543,7 +543,11 @@ export function SettingsApp() {
                   {updateMessage}
                 </span>
               )}
-              <SmallButton onClick={() => void checkUpdate()}>检查更新</SmallButton>
+              {status?.updatesAvailable ? (
+                <SmallButton onClick={() => void checkUpdate()}>检查更新</SmallButton>
+              ) : status ? (
+                <span className="text-xs text-neutral-400">外测版不检查更新</span>
+              ) : null}
             </div>
           </Row>
         </Section>
