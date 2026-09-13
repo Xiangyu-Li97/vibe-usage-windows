@@ -27,6 +27,7 @@ try {
     cpSync(join(vendored, name), join(temporary, name), { recursive: true });
   }
   cpSync(join(source, "test"), join(temporary, "test"), { recursive: true });
+  cpSync(join(source, "test-support"), join(temporary, "test-support"), { recursive: true });
   console.log(`Testing bundled CLI ${metadata.version} (${metadata.commit}) with ${tests.length} upstream test files`);
   const result = spawnSync(process.execPath, ["--test", ...tests.map(name => join("test", name))], {
     cwd: temporary, stdio: "inherit", timeout: 300_000,

@@ -9,11 +9,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot 'windows-build-paths.ps1')
+$buildPaths = Resolve-VibeBuildPaths -Workspace (Get-Location).Path
+if (-not $buildPaths.ExplicitTarget) {
+  $env:CARGO_TARGET_DIR = $buildPaths.TargetDirectory
+}
+New-Item -ItemType Directory -Path $buildPaths.TargetDirectory -Force | Out-Null
+Write-Host "Cargo target: $($buildPaths.TargetDirectory)"
 
 if ($ExternalTest) {
   $env:TAURI_FEATURES = "external-test-diagnostics"
   $env:VIBE_USAGE_BUILD_KIND = "external-test"
-  $env:VIBE_USAGE_APP_BUILD = "local-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+  $env:VIBE_USAGE_APP_BUILD = "windows-acceptance-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
   if (-not $env:VIBE_USAGE_APP_COMMIT) {
     $commit = if (Get-Command git -ErrorAction SilentlyContinue) {
       (& git rev-parse --short=12 HEAD 2>$null)
@@ -60,12 +67,7 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $version = (Get-Content package.json | ConvertFrom-Json).version
-$installer = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*$version*setup.exe" |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-if (-not $installer) {
-  throw "No NSIS installer found for version $version."
-}
+$installer = Find-VibeInstaller -BuildPaths $buildPaths -Version $version -ExternalTest:$ExternalTest
 $dest = if ($ExternalTest) {
   "VibeUsage-$version-Windows-External-Test-Setup.exe"
 } else {

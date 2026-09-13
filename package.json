@@ -1,12 +1,12 @@
 {
   "name": "vibe-usage-app-windows",
   "private": true,
-  "version": "0.5.12",
+  "version": "0.5.13",
   "vibeUsageCliChannel": "latest",
-  "vibeUsageCliVersion": "0.10.32",
-  "vibeUsageCliCommit": "4ab7b98e3e6c",
+  "vibeUsageCliVersion": "0.10.32-windows-acceptance.1",
+  "vibeUsageCliCommit": "5387113efc20",
   "type": "module",
-  "description": "Vibe Usage for Windows — AI coding tool token usage tracker (Windows port of the macOS Vibe Usage app)",
+  "description": "Vibe Usage for Windows \u2014 AI coding tool token usage tracker (Windows port of the macOS Vibe Usage app)",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

@@ -1,4 +1,9 @@
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'windows-build-paths.ps1')
+$buildPaths = Resolve-VibeBuildPaths -Workspace (Join-Path $PSScriptRoot '..')
+if (-not $buildPaths.ExplicitTarget) {
+  $env:CARGO_TARGET_DIR = $buildPaths.TargetDirectory
+}
 
 $bundles = if ($env:TAURI_BUNDLES) { $env:TAURI_BUNDLES } else { "nsis" }
 $buildArgs = @("tauri", "build", "--bundles", $bundles)
@@ -90,17 +95,12 @@ try {
 
   if ($signingEnabled) {
     $version = (Get-Content package.json | ConvertFrom-Json).version
-    $installer = Get-ChildItem -Path "target\release\bundle\nsis" -Filter "*$version*setup.exe" |
-      Sort-Object LastWriteTime -Descending |
-      Select-Object -First 1
-    if (-not $installer) {
-      throw "NSIS installer not found for version $version."
-    }
+    $installer = Find-VibeInstaller -BuildPaths $buildPaths -Version $version -ExternalTest:($env:VIBE_USAGE_BUILD_KIND -eq 'external-test')
 
     $artifactsToVerify = if ($useSignPath) {
       @($installer.FullName)
     } else {
-      @("target\release\vibe-usage-app.exe", $installer.FullName)
+      @((Join-Path $buildPaths.ReleaseDirectory 'vibe-usage-app.exe'), $installer.FullName)
     }
 
     foreach ($artifact in $artifactsToVerify) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Version consistency gate (counterpart of macOS scripts/check-version.sh):
-// App versions must agree, and release vendoring must resolve npm's latest
-// dist-tag to a concrete, self-contained CLI package.
+// App versions and the reviewed, checked-in CLI identity must agree.
+// This gate performs no registry lookup and does not change the snapshot.
 
 import fs from "node:fs";
 import path from "node:path";

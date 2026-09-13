@@ -34,6 +34,14 @@ jobs:
       - name: Version consistency
         run: node scripts/check-version.mjs
 
+      - name: Release wrapper path regression (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./scripts/test-windows-build-paths.ps1
+
+      - name: Release wrapper path regression (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/test-windows-build-paths.ps1
+
       - name: Frontend tests
         run: pnpm test
 
