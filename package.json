@@ -16,6 +16,7 @@
     "vendor:cli": "node scripts/vendor-cli.mjs",
     "fetch:node": "node scripts/fetch-node.mjs",
     "check:version": "node scripts/check-version.mjs",
+    "check:cli-upstream": "node scripts/verify-cli-upstream.mjs",
     "release:windows": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1"
   },
   "dependencies": {

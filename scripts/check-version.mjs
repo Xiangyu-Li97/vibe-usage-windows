@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 // Version consistency gate (counterpart of macOS scripts/check-version.sh):
-// App versions must agree, and release vendoring must resolve npm's latest
-// dist-tag to a concrete, self-contained CLI package.
+// App versions must agree, and the vendored CLI snapshot must carry the concrete
+// version pinned in package.json#vibeUsageCliVersion.
+//
+// This script is offline and never re-vendors: it only compares the checked-in
+// snapshot against the pin, which is what keeps a release reproducible. Resolving
+// npm's `latest` dist-tag happens in scripts/vendor-cli.mjs, which a maintainer
+// runs by hand; upstream drift is reported by scripts/verify-cli-upstream.mjs.
 
 import fs from "node:fs";
 import path from "node:path";
