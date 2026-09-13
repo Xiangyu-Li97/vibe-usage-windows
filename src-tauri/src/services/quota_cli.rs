@@ -126,7 +126,7 @@ pub async fn fetch(
     if let Some(key) = zcode_key.as_deref() {
         command.env(region.environment_key(), key);
     }
-    let output = tokio::time::timeout(TIMEOUT, command.output())
+    let output = tokio::time::timeout(TIMEOUT, crate::process_lifecycle::output(&mut command))
         .await
         .map_err(|_| FetchError::Timeout)?
         .map_err(|_| FetchError::Launch)?;

@@ -2,15 +2,16 @@
 # Exercises the real wrappers with fake node/pnpm/cargo/signature commands.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-build-paths.ps1')
+. (Join-Path $PSScriptRoot 'windows-build-tools.ps1')
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('vbu-path-test-' + [Guid]::NewGuid().ToString('N'))
 $previousLocation = (Get-Location).Path
 $environmentNames = @('CARGO_TARGET_DIR', 'LOCALAPPDATA', 'TAURI_FEATURES', 'TAURI_BUNDLES',
   'VIBE_USAGE_BUILD_KIND', 'VIBE_USAGE_APP_BUILD', 'VIBE_USAGE_APP_COMMIT',
   'WINDOWS_CODESIGN_CERT_THUMBPRINT', 'WINDOWS_CODESIGN_PFX_BASE64', 'WINDOWS_CODESIGN_PFX_PASSWORD',
-  'SIGNPATH_API_TOKEN', 'SIGNPATH_ALLOW_UNTRUSTED_SIGNATURE')
+  'SIGNPATH_API_TOKEN', 'SIGNPATH_ALLOW_UNTRUSTED_SIGNATURE', 'npm_execpath', 'npm_node_execpath', 'Path')
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
-$testState = @{ Checks = 0; VerifiedArtifacts = @() }
+$testState = @{ Checks = 0; VerifiedArtifacts = @(); CargoArgs = @(); CargoTarget = ''; CargoExit = 0 }
 function Assert-PathTest([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
   $testState.Checks += 1
@@ -32,17 +33,28 @@ try {
   Assert-PathTest ($other.TargetDirectory -ne $short.TargetDirectory) 'different workspaces do not share targets'
   $relative = Resolve-VibeBuildPaths -Workspace $longWorkspace -CargoTargetDir 'custom-target' -LocalAppData $localCache
   Assert-PathTest ($relative.ExplicitTarget -and $relative.TargetDirectory -eq (Join-Path $longWorkspace 'custom-target')) 'relative user override is resolved against source and preserved'
+  $pnpmModules = Join-Path $testRoot 'isolated-tools/node_modules'
+  $pnpmEntry = Join-Path $pnpmModules 'pnpm/bin/pnpm.cjs'
+  $pnpmBin = Join-Path $pnpmModules '.bin'
+  New-Item -ItemType Directory -Path ([System.IO.Path]::GetDirectoryName($pnpmEntry)), $pnpmBin -Force | Out-Null
+  Set-Content -LiteralPath $pnpmEntry -Value '// fixture'
+  Set-Content -LiteralPath (Join-Path $pnpmBin 'pnpm.cmd') -Value '@rem fixture'
+  Assert-PathTest ((Resolve-VibePnpmBin -PnpmEntry $pnpmEntry) -eq $pnpmBin) 'isolated pnpm entry recovers its existing shim directory'
 
   # Exercise both wrappers, including locating/copying and verifying artifacts
   # outside workspace/target. Never invoke the actual compiler or signing tool.
   $fixtureScripts = Join-Path $longWorkspace 'scripts'
   New-Item -ItemType Directory -Path $fixtureScripts -Force | Out-Null
-  foreach ($file in @('windows-build-paths.ps1', 'release-windows.ps1', 'build-tauri-windows.ps1')) {
+  foreach ($file in @('windows-build-paths.ps1', 'windows-build-tools.ps1', 'cargo-windows.ps1', 'release-windows.ps1', 'build-tauri-windows.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $fixtureScripts
   }
   Set-Content -LiteralPath (Join-Path $longWorkspace 'package.json') -Value '{"version":"0.0.0"}' -Encoding UTF8
   function node { $global:LASTEXITCODE = 0 }
-  function cargo { $global:LASTEXITCODE = 0 }
+  function cargo {
+    $testState.CargoArgs = @($args)
+    $testState.CargoTarget = $env:CARGO_TARGET_DIR
+    $global:LASTEXITCODE = $testState.CargoExit
+  }
   function pnpm {
     if ($args[0] -eq 'tauri') {
       Assert-PathTest ((Get-Location).Path -eq $longWorkspace) 'Vite runs from the original source directory'
@@ -61,7 +73,9 @@ try {
     $testState.VerifiedArtifacts += $FilePath
     return [PSCustomObject]@{ Status = 'Valid'; StatusMessage = 'test stub' }
   }
-  foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+  foreach ($name in $environmentNames) {
+    if ($name -ne 'Path') { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+  }
   $env:LOCALAPPDATA = $localCache
   $env:VIBE_USAGE_APP_COMMIT = 'test-fixture'
   $env:WINDOWS_CODESIGN_CERT_THUMBPRINT = 'test-stub-only'
@@ -75,6 +89,17 @@ try {
     Assert-PathTest ($copied.Trim() -eq 'test installer') 'release copies the external installer from the actual target'
     Assert-PathTest ($testState.VerifiedArtifacts[-2] -eq (Join-Path (Join-Path $expected 'release') 'vibe-usage-app.exe')) 'signing verifies the relocated application'
   }
+  $env:CARGO_TARGET_DIR = $null
+  $testState.CargoExit = 101
+  & (Join-Path $fixtureScripts 'cargo-windows.ps1') test --workspace --features external-test-diagnostics
+  Assert-PathTest ($LASTEXITCODE -eq 101) 'Cargo wrapper preserves a native failure exit code'
+  Assert-PathTest (($testState.CargoArgs -join '|') -eq 'test|--workspace|--features|external-test-diagnostics') 'Cargo wrapper forwards all arguments'
+  Assert-PathTest ($testState.CargoTarget -eq $short.TargetDirectory) 'Cargo tests use the same automatic short target'
+  Assert-PathTest ([string]::IsNullOrEmpty($env:CARGO_TARGET_DIR)) 'Cargo wrapper restores caller target environment'
+  $env:CARGO_TARGET_DIR = Join-Path $testRoot 'explicit-cargo-target'
+  $testState.CargoExit = 0
+  & (Join-Path $fixtureScripts 'cargo-windows.ps1') check --workspace
+  Assert-PathTest ($LASTEXITCODE -eq 0 -and $testState.CargoTarget -eq $env:CARGO_TARGET_DIR) 'Cargo wrapper preserves explicit target and success exit code'
   Write-Host "Build path regression: $($testState.Checks) checks passed."
 } finally {
   Set-Location $previousLocation

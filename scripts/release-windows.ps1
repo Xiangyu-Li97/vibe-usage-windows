@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 . (Join-Path $PSScriptRoot 'windows-build-paths.ps1')
+. (Join-Path $PSScriptRoot 'windows-build-tools.ps1')
+Initialize-VibeBuildTools
 $buildPaths = Resolve-VibeBuildPaths -Workspace (Get-Location).Path
 if (-not $buildPaths.ExplicitTarget) {
   $env:CARGO_TARGET_DIR = $buildPaths.TargetDirectory

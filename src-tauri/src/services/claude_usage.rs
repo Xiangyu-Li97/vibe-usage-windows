@@ -106,8 +106,7 @@ async fn run_probe(candidate: &Path) -> Result<ProviderRateLimit, String> {
     }
     crate::process_utils::hide_tokio_command_window(&mut command);
 
-    let mut child = command
-        .spawn()
+    let (mut child, _process_guard) = crate::process_lifecycle::spawn(&mut command)
         .map_err(|e| format!("无法启动 Claude: {e}"))?;
     let stdin = child.stdin.take().ok_or("无法连接 Claude stdin")?;
     let stdout = child.stdout.take().ok_or("无法连接 Claude stdout")?;

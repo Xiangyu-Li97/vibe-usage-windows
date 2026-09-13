@@ -54,10 +54,10 @@ jobs:
         run: node scripts/fetch-node.mjs
 
       - name: Rust tests
-        run: cargo test --workspace
+        run: ./scripts/cargo-windows.ps1 test --workspace
 
       - name: External-test update isolation
-        run: cargo test --workspace --features external-test-diagnostics
+        run: ./scripts/cargo-windows.ps1 test --workspace --features external-test-diagnostics
 
       - name: Rust check (app)
-        run: cargo check -p vibe-usage-app
+        run: ./scripts/cargo-windows.ps1 check -p vibe-usage-app

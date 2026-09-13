@@ -4,6 +4,7 @@
 mod commands;
 mod panel;
 mod process_utils;
+mod process_lifecycle;
 mod services;
 mod state;
 mod tray;
@@ -98,11 +99,26 @@ pub fn run() {
         ])
         .build(context)
         .expect("error while building tauri application")
-        .run(|_app, event| {
+        .run(|app, event| {
             // Keep the tray app alive when every window is hidden/destroyed.
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();
+                } else if !process_lifecycle::shutdown_complete() {
+                    // Explicit quit (UI, tray, updater): stop admitting CLI
+                    // launches and wait for our child jobs before exiting.
+                    api.prevent_exit();
+                    if process_lifecycle::begin_shutdown() {
+                        services::scheduler::stop(app);
+                        let app = app.clone();
+                        let code = code.unwrap_or(0);
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if !process_lifecycle::finish_shutdown() {
+                                log::warn!("CLI process cleanup exceeded the shutdown deadline");
+                            }
+                            app.exit(code);
+                        });
+                    }
                 }
             }
         });

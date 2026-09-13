@@ -32,8 +32,10 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 可在设置中为 Codex、Grok、Antigravity / AGY 添加多个 Multica 或其他隔离运行时目录；各工具默认目录仍会继续扫描
 - 订阅配额读取对齐 macOS：Codex 优先读取实时官方用量、离线回退会话日志；Claude 使用无工具、无提示、无会话持久化的只读探测，不修改 Claude 状态栏配置
 - workflow_dispatch 生成的外测包可导出严格脱敏的配额诊断；正式 tag Release 不编译诊断实现，设置入口也不会显示
-- 发布构建使用代码库中已审查的固定 CLI 快照；本分支对齐 CLI `0.10.32-windows-acceptance.1` / `5387113efc20`，并保留 Windows 补丁。构建期间不会重新拉取 npm `latest`
+- 发布构建使用代码库中已审查的固定 CLI 快照；本分支对齐 CLI `0.10.32-windows-acceptance.2` / `d9e701a333c4`，并保留 Windows 补丁。构建期间不会重新拉取 npm `latest`
 - 支持开机自启动、单实例、应用内检查更新
+
+Windows 开发时通过 `scripts/cargo-windows.ps1` 执行 Cargo 子命令；原生 `cargo test` 不会自动调用本项目脚本，在长路径下仍可能触发 MSVC LNK1104。
 
 长路径源码目录构建时，脚本自动把 Cargo 输出放到 `%LOCALAPPDATA%\vbu-t\<工作区哈希>`；源码和 Vite 工作目录保持原路径。显式设置的 `CARGO_TARGET_DIR` 优先，安装包和签名验证都使用实际输出目录。Windows 修复基线及尚未完成的验收见 [任务单](docs/WINDOWS_ACCEPTANCE.md)。
 
@@ -79,8 +81,8 @@ pnpm tauri dev
 
 ```bash
 pnpm test                # 前端单测（formatters/aggregate/modelFamilies，与 Swift 实现对拍）
-cargo test --workspace   # Rust 单测（配置迁移、产品发现/选择、配额桥、凭据边界等）
-cargo test --workspace --features external-test-diagnostics # 外测更新隔离
+powershell -NoProfile -File scripts/cargo-windows.ps1 test --workspace   # Rust 单测（配置迁移、产品发现/选择、配额桥、凭据边界等）
+powershell -NoProfile -File scripts/cargo-windows.ps1 test --workspace --features external-test-diagnostics # 外测更新隔离
 node scripts/test-vendored-cli.mjs --tests-from ../vibe-usage # 对实际内置 CLI 运行同提交的上游测试
 ```
 
