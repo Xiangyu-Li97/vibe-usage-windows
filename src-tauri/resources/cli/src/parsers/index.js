@@ -20,15 +20,19 @@ import { parse as parseDsh } from './dsh.js';
 import { parse as parseAntigravity } from './antigravity.js';
 import { parse as parseHermes } from './hermes.js';
 import { parse as parseKiro } from './kiro.js';
+import { parse as parseMcode } from './mcode.js';
 import { parse as parseMimocode } from './mimocode.js';
 import { parse as parsePiCodingAgent } from './pi-coding-agent.js';
+import { parse as parseCola } from './cola.js';
 import { parse as parseZcode } from './zcode.js';
 import { parse as parseTraeCli } from './trae-cli.js';
 import { parse as parseWorkbuddy } from './workbuddy.js';
+import { parseQoder, parseQoderCn } from './qoder.js';
 
 export const parsers = {
   'claude-code': parseClaudeCode,
   'codex': parseCodex,
+  'cola': parseCola,
   'grok': parseGrok,
   'copilot-cli': parseCopilotCli,
   'craft-agent': parseCraftAgent,
@@ -39,6 +43,8 @@ export const parsers = {
   'openclaw': parseOpenclaw,
   'omp': parseOmp,
   'pi-coding-agent': parsePiCodingAgent,
+  'qoder': parseQoder,
+  'qoder-cn': parseQoderCn,
   'qwen-code': parseQwenCode,
   'kimi-code': parseKimiCode,
   'amp': parseAmp,
@@ -49,6 +55,7 @@ export const parsers = {
   'trae-cli': parseTraeCli,
   'hermes': parseHermes,
   'kiro': parseKiro,
+  'mcode': parseMcode,
   'mimocode': parseMimocode,
   'cline': parseCline,
   'roo-code': parseRooCode,

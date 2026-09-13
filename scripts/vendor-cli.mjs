@@ -132,19 +132,38 @@ function applyWindowsPatches() {
     ],
   ]);
 
-  // 3. OpenCode on Windows stores data under %LOCALAPPDATA%\\opencode.
-  patchFile("src/parsers/opencode.js", [
+  // 3. OpenCode on Windows keeps session data under %LOCALAPPDATA%\opencode in
+  // some builds, while upstream only ever probes the XDG location. Upstream
+  // moved root resolution out of the parser into src/opencode-roots.js
+  // (v0.10.31, extra-root support), so the probe is added to the default-root
+  // list there. XDG stays first: this adds a root, it never replaces one.
+  patchFile("src/opencode-roots.js", [
     [
-      "const DATA_DIR = join(homedir(), '.local', 'share', 'opencode');",
-      `function resolveOpencodeDataDir() {
+      "import { accessSync, constants, realpathSync, statSync } from 'node:fs';",
+      "import { accessSync, constants, existsSync, realpathSync, statSync } from 'node:fs';",
+      "opencode roots fs helpers",
+    ],
+    [
+      `  const defaults = override ? override.split(delimiter).map(p => p.trim()).filter(Boolean)
+    : [join(homedir(), '.local', 'share', 'opencode')];`,
+      `  const defaults = override ? override.split(delimiter).map(p => p.trim()).filter(Boolean)
+    : defaultOpenCodeRoots();`,
+      "opencode roots defaults",
+    ],
+    [
+      "export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}) {",
+      `// XDG first, then the Windows per-user store. A root that does not resolve is
+// skipped silently by the caller, so probing costs nothing when it is absent.
+function defaultOpenCodeRoots() {
   const xdg = join(homedir(), '.local', 'share', 'opencode');
-  if (process.platform === 'win32' && !existsSync(xdg) && process.env.LOCALAPPDATA) {
-    const winDir = join(process.env.LOCALAPPDATA, 'opencode');
-    if (existsSync(winDir)) return winDir;
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  if (process.platform === 'win32' && localAppData) {
+    return [xdg, join(localAppData, 'opencode')];
   }
-  return xdg;
+  return [xdg];
 }
-const DATA_DIR = resolveOpencodeDataDir();`,
+
+export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}) {`,
       "opencode windows data dir",
     ],
   ]);
