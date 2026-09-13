@@ -27,7 +27,7 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 内置 [@vibe-cafe/vibe-usage](https://github.com/vibe-cafe/vibe-usage) CLI 与 Node 运行时，开箱即用，无需安装 Node.js
 - 可在设置中为 Codex、Grok、Antigravity / AGY 添加多个 Multica 或其他隔离运行时目录；各工具默认目录仍会继续扫描
 - 订阅配额读取对齐 macOS：Codex 优先读取实时官方用量、离线回退会话日志；Claude 使用无工具、无提示、无会话持久化的只读探测，不修改 Claude 状态栏配置
-- 发布构建从 npm `latest` 解析 CLI，再把解析出的确定版本内置进安装包；用户机器不会在运行时拉取或执行未随安装包验证的新代码
+- 内置 CLI 是仓库中已审查并固定的快照（版本见 `package.json` 的 `vibeUsageCliVersion`）；发布构建直接打包该快照，不会在构建期从 npm 解析或下载新的 Vibe Usage CLI，用户机器也不会在运行时拉取或执行未随安装包验证的新代码。npm `latest` 仅在维护者显式执行 `node scripts/vendor-cli.mjs` 更新快照时用于选择候选 CLI 版本
 - 支持开机自启动、单实例、应用内检查更新
 
 ## 系统要求
