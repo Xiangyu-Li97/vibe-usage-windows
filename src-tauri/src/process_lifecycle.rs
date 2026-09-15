@@ -36,7 +36,7 @@ struct State {
 #[derive(Default)]
 struct Supervisor {
     state: Mutex<State>,
-    complete: AtomicBool,
+    attempt_finished: AtomicBool,
 }
 
 pub struct ChildGuard(Arc<Job>);
@@ -123,11 +123,15 @@ impl Supervisor {
     }
 
     fn finish_shutdown(&self) -> bool {
+        self.finish_shutdown_with_timeout(Duration::from_secs(5))
+    }
+
+    fn finish_shutdown_with_timeout(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
         let jobs = self.state.lock().unwrap().jobs.clone();
         for job in &jobs {
             job.terminate();
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
         let drained = loop {
             if jobs.iter().all(|job| job.empty()) {
                 break true;
@@ -137,8 +141,10 @@ impl Supervisor {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        // Handles also have KILL_ON_JOB_CLOSE for forced process termination.
-        self.complete.store(true, Ordering::Release);
+        // This flag only releases the UI exit gate after the bounded attempt;
+        // it is not a claim that cleanup succeeded. On timeout return false so
+        // the exit handler logs the fallback. Job handles retain kill-on-close.
+        self.attempt_finished.store(true, Ordering::Release);
         drained
     }
 }
@@ -169,8 +175,8 @@ pub fn begin_shutdown() -> bool {
 pub fn finish_shutdown() -> bool {
     supervisor().finish_shutdown()
 }
-pub fn shutdown_complete() -> bool {
-    supervisor().complete.load(Ordering::Acquire)
+pub fn shutdown_attempt_finished() -> bool {
+    supervisor().attempt_finished.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
@@ -187,7 +193,19 @@ mod tests {
         });
         assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Interrupted);
         assert!(scope.finish_shutdown());
-        assert!(scope.complete.load(Ordering::Acquire));
+        assert!(scope.attempt_finished.load(Ordering::Acquire));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uncertain_cleanup_returns_failure_without_claiming_drained() {
+        let scope = Supervisor::default();
+        let job = Arc::new(Job::new().unwrap());
+        job.mark_test_snapshot_uncertain();
+        scope.state.lock().unwrap().jobs.push(job);
+        assert!(scope.begin_shutdown());
+        assert!(!scope.finish_shutdown_with_timeout(Duration::ZERO));
+        assert!(scope.attempt_finished.load(Ordering::Acquire));
     }
 
     #[cfg(windows)]
@@ -213,6 +231,16 @@ mod tests {
             .parse()
             .unwrap();
         let grandchild = windows::open_wait_handle(pid).unwrap();
+        let job = scope.state.lock().unwrap().jobs[0].clone();
+        let before = job.diagnostic_state(&grandchild).unwrap();
+        eprintln!(
+            "lifecycle before: grandchild_in_job={} tracked_handles={} pending_handles={}",
+            before.0, before.1, before.2
+        );
+        assert!(
+            before.0,
+            "fixture grandchild must belong to the managed job"
+        );
         // An unrelated helper must survive: never kill all node/powershell PIDs.
         let mut unrelated = tokio::process::Command::new("powershell.exe")
             .args([
@@ -227,6 +255,13 @@ mod tests {
         assert!(scope.begin_shutdown());
         assert!(scope.finish_shutdown());
         assert!(child.wait().await.is_ok());
+        let after = job.diagnostic_state(&grandchild).unwrap();
+        eprintln!(
+            "lifecycle after: tracked_handles={} pending_handles={} grandchild_signaled={}",
+            after.1,
+            after.2,
+            windows::signaled(&grandchild)
+        );
         assert!(windows::signaled(&grandchild));
         assert!(unrelated.try_wait().unwrap().is_none());
         unrelated.kill().await.unwrap();

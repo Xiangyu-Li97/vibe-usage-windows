@@ -29,7 +29,7 @@ snapshot `14c7ccb5bf29` / development `458feb52202b` was tested on Windows:
 
 ## New revision
 
-App **0.5.14**, CLI **0.10.32-windows-acceptance.2**, unpublished. This revision
+App **0.5.14**, CLI **0.10.32-windows-acceptance.3**, unpublished. This revision
 has not yet run on Windows. Read package.json/MANIFEST for exact new commits.
 
 - LONGPATH-CARGO-01: `scripts/cargo-windows.ps1` applies the same stable short
@@ -56,10 +56,21 @@ has not yet run on Windows. Read package.json/MANIFEST for exact new commits.
 - TOOL-PATH-01: a pnpm run child recovers existing pnpm shims from npm_execpath
   and keeps npm_node_execpath's Node first on PATH. No auto-download of pnpm or
   npm latest is added. If no usable installation exists, fail with instructions.
+- CLI-VERSION-01: `--version` and `-v` print the version from the shipped
+  package.json and exit successfully without reading config or starting sync.
+- PNPM-LONGPATH-01: `.pnpmfile.cjs` uses a short Windows virtual store keyed by
+  the canonical checkout path (pnpm >=10.8, <11). Explicit virtual-store overrides
+  are authoritative; other platforms keep pnpm defaults. Regress A install/build,
+  B production install, A build again, concurrent builds and explicit overrides.
+- RELEASE-PRIVACY-01: the supported Tauri build wrapper remaps source/home paths
+  for rustc, including dependencies, and restores plain/encoded flags on failure.
+  Scan installed EXE payloads, not only compressed setup files; preserve failures.
+- QUOTA-SELECTOR-01: display discovery separately from a matching quota result;
+  never equate an unread product with no-data, or use another provider's snapshot.
 
 ## Commands and evidence
 
-Use Windows x64, Node 22 (node:sqlite), pnpm 10, Rust 1.88 and MSVC/SDK. Keep the
+Use Windows x64, Node 22 (node:sqlite), pnpm >=10.8 <11, Rust 1.88 and MSVC/SDK. Keep the
 same deliberately long clone location, with CLI in sibling `vibe-usage`.
 Do not import old target/dist/node_modules. Do not re-vendor npm latest.
 

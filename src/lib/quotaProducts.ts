@@ -28,16 +28,28 @@ export function quotaProductStatusText(
   product: QuotaProduct,
   zCodeStatus?: ZCodeCredentialStatus,
   zCodeRegion: ZCodeQuotaRegion = "bigModel",
+  snapshot?: ProviderRateLimit,
 ): string {
+  const detected = product.isDetected ? "已检测" : "未检测到";
   if (product.provider === "zcode" && product.availability === "ready" && zCodeStatus) {
     const configured = isZCodeConfigured(zCodeStatus, zCodeRegion);
-    if (!product.isDetected) return configured ? "未检测到 · API Key 已配置" : "未检测到";
-    return configured ? "已检测 · API Key 已配置" : "需配置 API Key";
+    if (!configured) return `${detected} · 需配置 API Key`;
   }
   if (product.availability === "pendingProtocol") {
     return product.isDetected ? "已检测 · 待接入" : "待接入";
   }
-  return product.isDetected ? "已检测" : "未检测到";
+  // Never-requested products and another provider's snapshot are not no-data.
+  const result = snapshot?.provider === product.provider ? snapshot : undefined;
+  const reading = result ? {
+    ok: "读取成功",
+    noData: "无数据",
+    disabled: "未启用",
+    unauthorized: "需重新登录",
+    retryableError: "读取失败 · 可重试",
+    error: "读取失败",
+  }[result.status.kind] : "未读取";
+  const configured = product.provider === "zcode" && zCodeStatus && isZCodeConfigured(zCodeStatus, zCodeRegion);
+  return `${detected}${configured ? " · API Key 已配置" : ""} · ${reading}`;
 }
 
 /** Keep selection order stable. All selected cards appear once one has an

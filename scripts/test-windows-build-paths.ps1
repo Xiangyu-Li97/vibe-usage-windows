@@ -19,6 +19,9 @@ function Assert-PathTest([bool]$Condition, [string]$Message) {
 }
 try {
   New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+  $npmrcPath = Join-Path (Split-Path -Parent $PSScriptRoot) '.npmrc'
+  $npmrc = Get-Content -LiteralPath $npmrcPath
+  Assert-PathTest (($npmrc | Where-Object { $_ -match '^virtual-store-dir=' }).Count -eq 0 -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) '.pnpmfile.cjs'))) 'pnpm uses per-checkout configuration rather than a shared version-only store'
   $shortWorkspace = Join-Path $testRoot 'source'
   $longWorkspace = Join-Path $testRoot ('long workspace ' + ('x' * 100))
   $localCache = Join-Path $testRoot 'local'
@@ -45,7 +48,7 @@ try {
   # outside workspace/target. Never invoke the actual compiler or signing tool.
   $fixtureScripts = Join-Path $longWorkspace 'scripts'
   New-Item -ItemType Directory -Path $fixtureScripts -Force | Out-Null
-  foreach ($file in @('windows-build-paths.ps1', 'windows-build-tools.ps1', 'cargo-windows.ps1', 'release-windows.ps1', 'build-tauri-windows.ps1')) {
+  foreach ($file in @('windows-build-paths.ps1', 'windows-build-tools.ps1', 'windows-rust-paths.ps1', 'cargo-windows.ps1', 'release-windows.ps1', 'build-tauri-windows.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $fixtureScripts
   }
   Set-Content -LiteralPath (Join-Path $longWorkspace 'package.json') -Value '{"version":"0.0.0"}' -Encoding UTF8

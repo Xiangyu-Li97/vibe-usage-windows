@@ -106,6 +106,7 @@ function ProductSelector() {
                       product,
                       state.zCodeCredentialStatus,
                       state.settings.zCodeQuotaRegion,
+                      state.rateLimits.find((snapshot) => snapshot.provider === product.provider),
                     )}
                   </span>
                 </span>

@@ -32,8 +32,12 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 可在设置中为 Codex、Grok、Antigravity / AGY 添加多个 Multica 或其他隔离运行时目录；各工具默认目录仍会继续扫描
 - 订阅配额读取对齐 macOS：Codex 优先读取实时官方用量、离线回退会话日志；Claude 使用无工具、无提示、无会话持久化的只读探测，不修改 Claude 状态栏配置
 - workflow_dispatch 生成的外测包可导出严格脱敏的配额诊断；正式 tag Release 不编译诊断实现，设置入口也不会显示
-- 发布构建使用代码库中已审查的固定 CLI 快照；本分支对齐 CLI `0.10.32-windows-acceptance.2` / `d9e701a333c4`，并保留 Windows 补丁。构建期间不会重新拉取 npm `latest`
+- 发布构建使用代码库中已审查的固定 CLI 快照；本分支对齐 CLI `0.10.32-windows-acceptance.3` / `57a107edb7ab`，并保留 Windows 补丁。构建期间不会重新拉取 npm `latest`
 - 支持开机自启动、单实例、应用内检查更新
+
+需要 pnpm 10.8 或更新的 10.x。仓库 `.pnpmfile.cjs` 在 Windows 将 virtual store 放到 `%LOCALAPPDATA%/vbu-pnpm-vstore/<checkout-path-hash>`；按规范化 checkout 路径隔离，而不是只按版本号隔离。其他平台保留 pnpm 默认目录。用户显式 `virtual-store-dir` 配置优先；不要让独立 checkout 显式共用同一目录。修改 hook 后应同步更新锁文件中的 pnpmfileChecksum，保留原锁定依赖。
+
+Release 构建入口在编译阶段重映射用户目录、Cargo/Rustup 自定义目录和源码路径，并恢复调用者的 Rust flags。必须扫描安装后的程序确认无私有构建路径，不能只扫描压缩安装器。额外回归：`node --test scripts/test-pnpm-store.cjs`、`powershell -NoProfile -File scripts/test-windows-rust-paths.ps1`（也用 PowerShell 7 执行）。
 
 Windows 开发时通过 `scripts/cargo-windows.ps1` 执行 Cargo 子命令；原生 `cargo test` 不会自动调用本项目脚本，在长路径下仍可能触发 MSVC LNK1104。
 

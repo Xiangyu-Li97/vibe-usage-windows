@@ -104,7 +104,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();
-                } else if !process_lifecycle::shutdown_complete() {
+                } else if !process_lifecycle::shutdown_attempt_finished() {
                     // Explicit quit (UI, tray, updater): stop admitting CLI
                     // launches and wait for our child jobs before exiting.
                     api.prevent_exit();
@@ -114,7 +114,7 @@ pub fn run() {
                         let code = code.unwrap_or(0);
                         tauri::async_runtime::spawn_blocking(move || {
                             if !process_lifecycle::finish_shutdown() {
-                                log::warn!("CLI process cleanup exceeded the shutdown deadline");
+                                log::warn!("CLI cleanup not confirmed before deadline; exiting with job kill-on-close");
                             }
                             app.exit(code);
                         });
