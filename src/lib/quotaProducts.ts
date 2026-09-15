@@ -8,14 +8,9 @@ import {
 
 export const MAX_QUOTA_SELECTION = 2;
 
-export const PROVIDER_LABELS: Record<RateLimitProvider, string> = {
-  codex: "Codex",
-  claudeCode: "Claude",
-  "kimi-code": "Kimi Code",
-  zcode: "ZCode",
-  grok: "Grok",
-  cursor: "Cursor",
-};
+export function providerLabel(provider: RateLimitProvider, products: QuotaProduct[]): string {
+  return products.find((product) => product.provider === provider)?.displayName ?? provider;
+}
 
 export function isZCodeConfigured(
   status: ZCodeCredentialStatus,

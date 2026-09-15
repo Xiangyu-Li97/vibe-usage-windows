@@ -159,7 +159,7 @@ fn initial_quota_selection(
 }
 
 #[tauri::command]
-pub fn get_quota_products(app: AppHandle) -> Vec<QuotaProduct> {
+pub fn get_quota_products() -> Vec<QuotaProduct> {
     let products = quota_product::discover();
     test_diagnostics::record_discovery(
         products
@@ -168,21 +168,26 @@ pub fn get_quota_products(app: AppHandle) -> Vec<QuotaProduct> {
             .map(|product| product.provider)
             .collect(),
     );
-    let ctx = app.state::<AppCtx>();
-    let initialized = ctx.settings.lock().unwrap().quota_selection_initialized;
-    if !initialized {
-        let region = ctx.settings.lock().unwrap().z_code_quota_region;
+    products
+}
+
+/// Run once before the Tauri context is exposed to windows. Discovery commands
+/// subsequently remain read-only, including concurrent panel/settings reads.
+pub fn initialize_quota_selection(ctx: &AppCtx) {
+    let mut settings = ctx.settings.lock().unwrap();
+    if !settings.quota_selection_initialized {
+        let products = quota_product::discover();
+        let region = settings.z_code_quota_region;
         let zcode_configured = zcode_credentials::load(region).ok().flatten().is_some();
         // A detected ZCode installation cannot yield quota without a key the
         // user explicitly gave this app, so it must not consume a default slot.
         let initial = initial_quota_selection(&products, zcode_configured);
-        ctx.settings.lock().unwrap().set_quota_selection(initial);
+        settings.set_quota_selection(initial);
+        let selected = settings.selected_quota_product_ids.clone();
+        drop(settings);
         ctx.save_settings();
-        let settings = ctx.settings.lock().unwrap().clone();
-        test_diagnostics::record_selection_initialized(settings.selected_quota_product_ids.clone());
-        let _ = app.emit("settings-updated", &settings);
+        test_diagnostics::record_selection_initialized(selected);
     }
-    products
 }
 
 #[tauri::command]
@@ -224,6 +229,9 @@ pub async fn set_zcode_quota_region(
         let ctx = app.state::<AppCtx>();
         let mut settings = ctx.settings.lock().unwrap();
         let previous_selection = settings.selected_quota_product_ids.clone();
+        if settings.z_code_quota_region != region {
+            ctx.rate_limits.lock().unwrap().invalidate_zcode();
+        }
         settings.z_code_quota_region = region;
         if !configured
             && settings
@@ -258,10 +266,11 @@ pub async fn set_zcode_api_key(
         .as_deref()
         .map(str::trim)
         .is_some_and(|value| !value.is_empty());
-    zcode_credentials::store(region, api_key.as_deref())?;
     {
         let ctx = app.state::<AppCtx>();
         let mut settings = ctx.settings.lock().unwrap();
+        zcode_credentials::store(region, api_key.as_deref())?;
+        ctx.rate_limits.lock().unwrap().invalidate_zcode();
         let previous_selection = settings.selected_quota_product_ids.clone();
         settings.z_code_quota_region = region;
         if !configured
@@ -303,6 +312,9 @@ pub fn set_settings(app: AppHandle, mut settings: AppSettings) {
     {
         let ctx = app.state::<AppCtx>();
         let mut current = ctx.settings.lock().unwrap();
+        if current.z_code_quota_region != settings.z_code_quota_region {
+            ctx.rate_limits.lock().unwrap().invalidate_zcode();
+        }
         *current = settings.clone();
     }
     let ctx = app.state::<AppCtx>();
@@ -454,6 +466,21 @@ mod tests {
     use vibe_core::RateLimitProvider;
 
     #[test]
+    fn startup_preserves_explicit_empty_selection_and_does_not_reinitialize() {
+        let directory = tempfile::tempdir().unwrap();
+        let ctx = crate::state::AppCtx::new(directory.path().to_path_buf());
+        ctx.settings.lock().unwrap().set_quota_selection(Vec::new());
+        super::initialize_quota_selection(&ctx);
+        assert!(ctx
+            .settings
+            .lock()
+            .unwrap()
+            .selected_quota_product_ids
+            .is_empty());
+        assert!(!directory.path().join("settings.json").exists());
+    }
+
+    #[test]
     fn extra_root_sources_are_allowlisted() {
         assert!(validate_extra_root_source("codex").is_ok());
         assert!(validate_extra_root_source("grok").is_ok());
@@ -465,6 +492,7 @@ mod tests {
     fn unconfigured_zcode_does_not_block_a_later_default_slot() {
         let ready = |provider| QuotaProduct {
             provider,
+            display_name: "fixture",
             availability: QuotaProductAvailability::Ready,
             is_detected: true,
         };

@@ -11,7 +11,7 @@ import {
 } from "../lib/types";
 import {
   MAX_QUOTA_SELECTION,
-  PROVIDER_LABELS,
+  providerLabel,
   quotaProductStatusText,
   visibleQuotaProviders,
 } from "../lib/quotaProducts";
@@ -100,7 +100,7 @@ function ProductSelector() {
                   {checked && <Check size={11} color="#34C759" strokeWidth={3} />}
                 </span>
                 <span className="min-w-0 grow">
-                  <span className="block text-xs text-white">{PROVIDER_LABELS[product.provider]}</span>
+                  <span className="block text-xs text-white">{product.displayName}</span>
                   <span className="block truncate text-[10px] text-neutral-500">
                     {quotaProductStatusText(
                       product,
@@ -197,7 +197,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
       <div className="flex items-center gap-1.5">
         <ProviderIcon provider={snapshot.provider} />
         <span className="truncate text-[13px] font-semibold text-white">
-          {PROVIDER_LABELS[snapshot.provider]}
+          {providerLabel(snapshot.provider, state.quotaProducts)}
         </span>
         <div className="grow" />
         {state.isRefreshingRateLimits && <div className="spinner h-3 w-3 shrink-0" />}
@@ -222,7 +222,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
         <NoDataContent provider={snapshot.provider} />
       )}
       {snapshot.status.kind === "unauthorized" && (
-        <MessageContent text={unauthorizedText(snapshot.provider, state.settings.zCodeQuotaRegion)} />
+        <MessageContent text={unauthorizedText(snapshot.provider, state.settings.zCodeQuotaRegion, providerLabel(snapshot.provider, state.quotaProducts))} />
       )}
       {snapshot.status.kind === "retryableError" && (
         <MessageContent text="暂时无法读取订阅配额" />
@@ -235,12 +235,12 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
   );
 }
 
-function unauthorizedText(provider: RateLimitProvider, region: "bigModel" | "zAI"): string {
+function unauthorizedText(provider: RateLimitProvider, region: "bigModel" | "zAI", label: string): string {
   if (provider === "zcode") {
     return `请在设置中配置 ${region === "bigModel" ? "BigModel" : "Z.ai"} API Key`;
   }
   if (provider === "kimi-code") return "请重新登录 Kimi Code 后重试";
-  return `请打开 ${PROVIDER_LABELS[provider]} 使用一次后重试`;
+  return `请打开 ${label} 使用一次后重试`;
 }
 
 function NoDataContent({ provider }: { provider: RateLimitProvider }) {

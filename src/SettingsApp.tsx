@@ -21,7 +21,6 @@ import {
 import { formatRelativeTime } from "./lib/formatters";
 import {
   MAX_QUOTA_SELECTION,
-  PROVIDER_LABELS,
   isZCodeConfigured,
   quotaProductStatusText,
 } from "./lib/quotaProducts";
@@ -52,8 +51,7 @@ export function SettingsApp() {
   const [extraRootsError, setExtraRootsError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    // Quota discovery performs the one-time automatic selection and therefore
-    // must finish before settings are read.
+    // Defaults are initialized by the backend before any window starts.
     const discovered = await api.getQuotaProducts().catch(() => null);
     const [
       nextStatus,
@@ -401,7 +399,7 @@ export function SettingsApp() {
           {quotaProducts.map((product) => {
             const selected = settings?.selectedQuotaProductIds.includes(product.provider) ?? false;
             return (
-              <Row key={product.provider} label={PROVIDER_LABELS[product.provider]}>
+              <Row key={product.provider} label={product.displayName}>
                 <div className="flex items-center gap-3">
                   <span className="max-w-[190px] truncate text-[11px] text-neutral-500">
                     {quotaProductStatusText(

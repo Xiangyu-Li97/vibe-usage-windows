@@ -135,6 +135,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [isRefreshingRateLimits, setIsRefreshingRateLimits] = useState(false);
   const [quotaSelectionError, setQuotaSelectionError] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  // A settings change or newer refresh supersedes responses already in flight.
+  const quotaRequest = useRef(0);
 
   const lastFetchTime = useRef<number | null>(null);
   const loadingRef = useRef(false);
@@ -213,29 +215,33 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   }, [fetchUsageData]);
 
   const refreshRateLimits = useCallback(async (force: boolean) => {
+    const request = ++quotaRequest.current;
     setIsRefreshingRateLimits(true);
     try {
-      setRateLimits(await api.getRateLimits(force));
+      const snapshots = await api.getRateLimits(force);
+      if (request === quotaRequest.current) setRateLimits(snapshots);
     } catch (err) {
       console.warn("rate limits:", err);
     } finally {
-      setIsRefreshingRateLimits(false);
+      if (request === quotaRequest.current) setIsRefreshingRateLimits(false);
     }
   }, []);
 
   const setQuotaProductSelected = useCallback(
     async (provider: RateLimitProvider, selected: boolean) => {
+      const request = ++quotaRequest.current;
       setQuotaSelectionError(null);
       setIsRefreshingRateLimits(true);
       try {
         const nextRateLimits = await api.setQuotaProductSelected(provider, selected);
         const nextSettings = await api.getSettings();
+        if (request !== quotaRequest.current) return;
         setSettings(nextSettings);
         setRateLimits(nextRateLimits);
       } catch (err) {
-        setQuotaSelectionError(String(err));
+        if (request === quotaRequest.current) setQuotaSelectionError(String(err));
       } finally {
-        setIsRefreshingRateLimits(false);
+        if (request === quotaRequest.current) setIsRefreshingRateLimits(false);
       }
     },
     [],
@@ -289,9 +295,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         setStatus(s);
         setConfigured(s.configured);
         configuredRef.current = s.configured;
-        // Discovery owns the one-time default selection, so it must finish
-        // before settings and rate limits are read.
+        // Backend startup has already initialized the default selection.
         const nextQuotaProducts = await api.getQuotaProducts();
+        const request = quotaRequest.current;
         const [nextSettings, nextSyncState, nextRateLimits, nextZCodeStatus] = await Promise.all([
           api.getSettings(),
           api.getSyncState(),
@@ -300,9 +306,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         ]);
         if (disposed) return;
         setQuotaProducts(nextQuotaProducts);
-        setSettings(nextSettings);
+        if (request === quotaRequest.current) setSettings(nextSettings);
         setSyncState(nextSyncState);
-        setRateLimits(nextRateLimits);
+        if (request === quotaRequest.current) setRateLimits(nextRateLimits);
         setZCodeCredentialStatus(nextZCodeStatus);
         if (s.configured) {
           await fetchUsageData();
@@ -331,6 +337,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       onUpdateAvailable((u) => setUpdateInfo(u)),
       onSettingsUpdated((nextSettings) => {
         setSettings(nextSettings);
+        setRateLimits([]);
         void api.getZCodeCredentialStatus().then(setZCodeCredentialStatus).catch(() => {});
         void refreshRateLimits(false);
       }),

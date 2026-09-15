@@ -21,8 +21,10 @@ pub fn run() {
         .map(|dir| dir.join(&context.config().identifier))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
+    let ctx = AppCtx::new(app_config_dir);
+    commands::initialize_quota_selection(&ctx);
     tauri::Builder::default()
-        .manage(AppCtx::new(app_config_dir))
+        .manage(ctx)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Second launch → surface the main window.

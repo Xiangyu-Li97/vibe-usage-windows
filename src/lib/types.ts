@@ -215,6 +215,7 @@ export type QuotaProductAvailability = "ready" | "pendingProtocol";
 
 export interface QuotaProduct {
   provider: RateLimitProvider;
+  displayName: string;
   availability: QuotaProductAvailability;
   isDetected: boolean;
 }

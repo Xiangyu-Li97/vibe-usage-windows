@@ -99,6 +99,29 @@ pub struct UpdateInfo {
 #[derive(Default)]
 pub struct RateLimitCache {
     pub snapshots: HashMap<RateLimitProvider, (ProviderRateLimit, Instant)>,
+    zcode_generation: u64,
+}
+
+impl RateLimitCache {
+    pub fn zcode_generation(&self) -> u64 {
+        self.zcode_generation
+    }
+
+    /// Called while holding settings, before exposing a changed region/key.
+    pub fn invalidate_zcode(&mut self) {
+        self.zcode_generation += 1;
+        self.snapshots.remove(&RateLimitProvider::ZCode);
+    }
+
+    pub fn store(&mut self, snapshot: ProviderRateLimit, zcode_generation: u64) {
+        if snapshot.provider == RateLimitProvider::ZCode
+            && zcode_generation != self.zcode_generation
+        {
+            return;
+        }
+        self.snapshots
+            .insert(snapshot.provider, (snapshot, Instant::now()));
+    }
 }
 
 pub struct AppCtx {
@@ -202,6 +225,56 @@ impl AppCtx {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn region_or_key_change_discards_cached_and_in_flight_zcode_results() {
+        use vibe_core::RateLimitStatus;
+        let mut cache = RateLimitCache::default();
+        let old_request = cache.zcode_generation();
+        let mut old_account =
+            ProviderRateLimit::empty(RateLimitProvider::ZCode, RateLimitStatus::Ok);
+        old_account.plan_label = Some("old account".into());
+        cache.store(old_account.clone(), old_request);
+        cache.invalidate_zcode();
+        assert!(!cache.snapshots.contains_key(&RateLimitProvider::ZCode));
+        cache.store(old_account, old_request);
+        assert!(!cache.snapshots.contains_key(&RateLimitProvider::ZCode));
+        cache.store(
+            ProviderRateLimit::empty(RateLimitProvider::Grok, RateLimitStatus::NoData),
+            old_request,
+        );
+        assert!(cache.snapshots.contains_key(&RateLimitProvider::Grok));
+        let current_request = cache.zcode_generation();
+        cache.store(
+            ProviderRateLimit::empty(RateLimitProvider::ZCode, RateLimitStatus::RetryableError),
+            current_request,
+        );
+        assert_eq!(
+            cache.snapshots[&RateLimitProvider::ZCode].0.status,
+            RateLimitStatus::RetryableError
+        );
+    }
+
+    #[test]
+    fn refresh_failure_replaces_old_success_instead_of_reviving_expired_meters() {
+        use vibe_core::RateLimitStatus;
+        let mut cache = RateLimitCache::default();
+        for provider in [
+            RateLimitProvider::KimiCode,
+            RateLimitProvider::ZCode,
+            RateLimitProvider::Grok,
+        ] {
+            cache.store(ProviderRateLimit::empty(provider, RateLimitStatus::Ok), 0);
+            cache.store(
+                ProviderRateLimit::empty(provider, RateLimitStatus::RetryableError),
+                0,
+            );
+            assert_eq!(
+                cache.snapshots[&provider].0.status,
+                RateLimitStatus::RetryableError
+            );
+        }
+    }
 
     #[test]
     fn migrates_legacy_provider_toggles_once() {

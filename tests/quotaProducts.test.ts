@@ -7,7 +7,7 @@ import {
 import { ProviderRateLimit, QuotaProduct } from "../src/lib/types";
 
 describe("quota product presentation", () => {
-  const grok: QuotaProduct = { provider: "grok", availability: "ready", isDetected: true };
+  const grok: QuotaProduct = { provider: "grok", displayName: "Grok", availability: "ready", isDetected: true };
 
   it("distinguishes a discovered unread product from a known no-data result", () => {
     expect(quotaProductStatusText(grok)).toBe("已检测 · 未读取");
@@ -27,7 +27,7 @@ describe("quota product presentation", () => {
   });
 
   it("separates regional credentials from discovery", () => {
-    const product: QuotaProduct = { provider: "zcode", availability: "ready", isDetected: false };
+    const product: QuotaProduct = { provider: "zcode", displayName: "ZCode", availability: "ready", isDetected: false };
     const credentials = { bigModelConfigured: true, zAiConfigured: false };
     expect(quotaProductStatusText(product, credentials, "zAI")).toBe("未检测到 · 需配置 API Key");
     expect(quotaProductStatusText(product, credentials, "bigModel")).toBe("未检测到 · API Key 已配置 · 未读取");
@@ -62,6 +62,7 @@ describe("quota product presentation", () => {
   it("describes discovery separately from protocol readiness", () => {
     const pending: QuotaProduct = {
       provider: "cursor",
+      displayName: "Cursor",
       availability: "pendingProtocol",
       isDetected: true,
     };

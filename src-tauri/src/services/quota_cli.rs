@@ -1,13 +1,13 @@
 //! Typed, JSON-only bridge to the vendored CLI subscription quota contract.
 
-use crate::services::{sync_engine, zcode_credentials};
-use crate::state::AppCtx;
+use crate::services::{sync_engine, test_diagnostics, zcode_credentials};
 use chrono::DateTime;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::process::Stdio;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
-use vibe_core::quota_product::ZCodeQuotaRegion;
+use tauri::AppHandle;
+use vibe_core::quota_product::{cli_id, cli_provider, ZCodeQuotaRegion};
 use vibe_core::{ProviderRateLimit, RateLimitMeter, RateLimitProvider, RateLimitStatus};
 
 const SCHEMA_VERSION: u32 = 1;
@@ -23,6 +23,7 @@ pub enum FetchError {
     InvalidJson,
     UnsupportedSchema,
     UnknownProduct,
+    ProductMismatch,
 }
 
 impl FetchError {
@@ -36,6 +37,7 @@ impl FetchError {
             Self::InvalidJson => "invalid_json",
             Self::UnsupportedSchema => "unsupported_schema",
             Self::UnknownProduct => "unknown_product",
+            Self::ProductMismatch => "quota_product_mismatch",
         }
     }
 }
@@ -51,6 +53,7 @@ impl std::fmt::Display for FetchError {
             Self::InvalidJson => "本地配额返回格式无效",
             Self::UnsupportedSchema => "本地配额协议版本不兼容",
             Self::UnknownProduct => "本地配额返回了未知产品",
+            Self::ProductMismatch => "本地配额返回的产品与请求不一致",
         })
     }
 }
@@ -87,6 +90,7 @@ struct Meter {
 pub async fn fetch(
     app: &AppHandle,
     providers: &[RateLimitProvider],
+    region: ZCodeQuotaRegion,
 ) -> Result<Vec<ProviderRateLimit>, FetchError> {
     let providers = providers
         .iter()
@@ -97,23 +101,27 @@ pub async fn fetch(
         return Ok(Vec::new());
     }
 
-    let (region, zcode_key) = if providers.contains(&RateLimitProvider::ZCode) {
-        let region = app
-            .state::<AppCtx>()
-            .settings
-            .lock()
-            .unwrap()
-            .z_code_quota_region;
-        let key = zcode_credentials::load(region).map_err(|_| FetchError::CredentialStore)?;
-        (region, key)
+    let zcode_key = if providers.contains(&RateLimitProvider::ZCode) {
+        zcode_credentials::load(region).map_err(|_| FetchError::CredentialStore)
     } else {
-        (ZCodeQuotaRegion::default(), None)
+        Ok(None)
     };
+    if zcode_key.is_err() {
+        test_diagnostics::record_failure(vec![RateLimitProvider::ZCode], "credential_store");
+    }
+    let (providers, zcode_key, mut snapshots) = isolate_credential_failure(providers, zcode_key);
+    if providers.is_empty() {
+        return Ok(snapshots);
+    }
 
     let mut args = vec!["quota".to_string(), "fetch".to_string()];
     for provider in &providers {
         args.push("--product".into());
-        args.push(cli_id(*provider).to_string());
+        args.push(
+            cli_id(*provider)
+                .expect("filtered CLI provider")
+                .to_string(),
+        );
     }
     args.push("--json".into());
 
@@ -133,24 +141,57 @@ pub async fn fetch(
     if !output.status.success() {
         return Err(FetchError::ProcessFailure);
     }
-    decode(&output.stdout)
+    snapshots.extend(decode(&output.stdout, &providers)?);
+    Ok(snapshots)
 }
 
-fn decode(data: &[u8]) -> Result<Vec<ProviderRateLimit>, FetchError> {
+fn isolate_credential_failure(
+    mut providers: Vec<RateLimitProvider>,
+    key: Result<Option<String>, FetchError>,
+) -> (
+    Vec<RateLimitProvider>,
+    Option<String>,
+    Vec<ProviderRateLimit>,
+) {
+    match key {
+        Ok(key) => (providers, key, Vec::new()),
+        Err(_) => {
+            providers.retain(|provider| *provider != RateLimitProvider::ZCode);
+            (
+                providers,
+                None,
+                vec![ProviderRateLimit::empty(
+                    RateLimitProvider::ZCode,
+                    RateLimitStatus::RetryableError,
+                )],
+            )
+        }
+    }
+}
+
+fn decode(
+    data: &[u8],
+    requested: &[RateLimitProvider],
+) -> Result<Vec<ProviderRateLimit>, FetchError> {
     let envelope: Envelope = serde_json::from_slice(data).map_err(|_| FetchError::InvalidJson)?;
     if envelope.schema_version != SCHEMA_VERSION {
         return Err(FetchError::UnsupportedSchema);
     }
-    envelope.products.into_iter().map(map_product).collect()
+    let snapshots = envelope
+        .products
+        .into_iter()
+        .map(map_product)
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected: HashSet<_> = requested.iter().copied().collect();
+    let returned: HashSet<_> = snapshots.iter().map(|snapshot| snapshot.provider).collect();
+    if expected != returned || snapshots.len() != returned.len() {
+        return Err(FetchError::ProductMismatch);
+    }
+    Ok(snapshots)
 }
 
 fn map_product(product: Product) -> Result<ProviderRateLimit, FetchError> {
-    let provider = match product.id.as_str() {
-        "kimi-code" => RateLimitProvider::KimiCode,
-        "zcode" => RateLimitProvider::ZCode,
-        "grok" => RateLimitProvider::Grok,
-        _ => return Err(FetchError::UnknownProduct),
-    };
+    let provider = cli_provider(&product.id).ok_or(FetchError::UnknownProduct)?;
     let meters = product
         .meters
         .into_iter()
@@ -194,29 +235,66 @@ fn parse_epoch(value: &str) -> Option<f64> {
 }
 
 pub fn uses_cli(provider: RateLimitProvider) -> bool {
-    matches!(
-        provider,
-        RateLimitProvider::KimiCode | RateLimitProvider::ZCode | RateLimitProvider::Grok
-    )
-}
-
-fn cli_id(provider: RateLimitProvider) -> &'static str {
-    match provider {
-        RateLimitProvider::KimiCode => "kimi-code",
-        RateLimitProvider::ZCode => "zcode",
-        RateLimitProvider::Grok => "grok",
-        _ => unreachable!("native provider passed to CLI bridge"),
-    }
+    cli_id(provider).is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn envelope(ids: &[&str]) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"schemaVersion": 1, "products": ids.iter().map(|id| {
+            serde_json::json!({"id": id, "status": "no_data", "meters": [], "fetchedAt": "2026-09-15T00:00:00Z"})
+        }).collect::<Vec<_>>()})).unwrap()
+    }
+
+    #[test]
+    fn response_must_cover_exactly_the_requested_products_once() {
+        let requested = [RateLimitProvider::KimiCode, RateLimitProvider::Grok];
+        for ids in [
+            vec![],
+            vec!["grok"],
+            vec!["grok", "grok"],
+            vec!["kimi-code", "grok", "zcode"],
+        ] {
+            assert_eq!(
+                decode(&envelope(&ids), &requested).unwrap_err(),
+                FetchError::ProductMismatch
+            );
+        }
+        assert_eq!(
+            decode(&envelope(&["grok", "kimi-code"]), &requested)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn credential_store_failure_does_not_block_other_providers() {
+        let (requested, key, failures) = isolate_credential_failure(
+            vec![
+                RateLimitProvider::ZCode,
+                RateLimitProvider::KimiCode,
+                RateLimitProvider::Grok,
+            ],
+            Err(FetchError::CredentialStore),
+        );
+        assert_eq!(
+            requested,
+            [RateLimitProvider::KimiCode, RateLimitProvider::Grok]
+        );
+        assert!(key.is_none());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].provider, RateLimitProvider::ZCode);
+        assert_eq!(failures[0].status, RateLimitStatus::RetryableError);
+    }
+
     #[test]
     fn decodes_provider_neutral_meters() {
         let snapshots = decode(
             br#"{"schemaVersion":1,"products":[{"id":"grok","status":"ok","meters":[{"id":"credits","label":"7d","utilization":30,"resetsAt":"2026-09-14T00:00:00Z","windowSeconds":604800}],"planLabel":"X Premium+","fetchedAt":"2026-09-08T02:00:00Z","dataAsOf":"2026-09-08T01:00:00Z","source":"local_log"}]}"#,
+            &[RateLimitProvider::Grok],
         )
         .unwrap();
         assert_eq!(snapshots.len(), 1);
@@ -227,9 +305,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_schema_and_product() {
-        assert!(decode(br#"{"schemaVersion":2,"products":[]}"#).is_err());
+        assert!(decode(br#"{"schemaVersion":2,"products":[]}"#, &[]).is_err());
         assert!(decode(
-            br#"{"schemaVersion":1,"products":[{"id":"unknown","status":"ok","meters":[],"fetchedAt":"2026-09-08T02:00:00Z"}]}"#
+            br#"{"schemaVersion":1,"products":[{"id":"unknown","status":"ok","meters":[],"fetchedAt":"2026-09-08T02:00:00Z"}]}"#, &[]
         )
         .is_err());
     }
@@ -238,6 +316,7 @@ mod tests {
     fn credential_failures_are_typed_without_preserving_messages() {
         let snapshots = decode(
             br#"{"schemaVersion":1,"products":[{"id":"zcode","status":"unauthorized","meters":[],"fetchedAt":"2026-09-08T02:00:00Z","message":"Bearer must-not-survive"}]}"#,
+            &[RateLimitProvider::ZCode],
         )
         .unwrap();
         assert_eq!(snapshots[0].status, RateLimitStatus::Unauthorized);

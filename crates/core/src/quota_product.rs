@@ -38,6 +38,7 @@ pub enum QuotaProductAvailability {
 #[serde(rename_all = "camelCase")]
 pub struct QuotaProduct {
     pub provider: RateLimitProvider,
+    pub display_name: &'static str,
     pub availability: QuotaProductAvailability,
     pub is_detected: bool,
 }
@@ -93,30 +94,94 @@ pub fn discover() -> Vec<QuotaProduct> {
 
 pub fn discover_with(environment: &DiscoveryEnvironment) -> Vec<QuotaProduct> {
     catalog()
-        .into_iter()
-        .map(|(provider, availability)| QuotaProduct {
-            provider,
-            availability,
-            is_detected: is_detected(provider, environment),
+        .iter()
+        .map(|product| QuotaProduct {
+            provider: product.provider,
+            display_name: product.display_name,
+            availability: product.availability,
+            is_detected: is_detected(product, environment),
         })
         .collect()
 }
 
-pub fn catalog() -> [(RateLimitProvider, QuotaProductAvailability); 6] {
-    [
-        (RateLimitProvider::Codex, QuotaProductAvailability::Ready),
-        (
-            RateLimitProvider::ClaudeCode,
-            QuotaProductAvailability::Ready,
-        ),
-        (RateLimitProvider::KimiCode, QuotaProductAvailability::Ready),
-        (RateLimitProvider::ZCode, QuotaProductAvailability::Ready),
-        (RateLimitProvider::Grok, QuotaProductAvailability::Ready),
-        (
-            RateLimitProvider::Cursor,
-            QuotaProductAvailability::PendingProtocol,
-        ),
+pub struct ProductDefinition {
+    pub provider: RateLimitProvider,
+    pub display_name: &'static str,
+    pub availability: QuotaProductAvailability,
+    pub cli_id: Option<&'static str>,
+    command: &'static str,
+    relative_paths: &'static [&'static str],
+}
+
+/// App-owned presentation, routing and discovery rules. The vendored CLI
+/// keeps its independent versioned contract; changing it requires CLI review.
+pub fn catalog() -> &'static [ProductDefinition] {
+    use QuotaProductAvailability::{PendingProtocol, Ready};
+    use RateLimitProvider::*;
+    &[
+        ProductDefinition {
+            provider: Codex,
+            display_name: "Codex",
+            availability: Ready,
+            cli_id: None,
+            command: "codex",
+            relative_paths: &[".codex"],
+        },
+        ProductDefinition {
+            provider: ClaudeCode,
+            display_name: "Claude",
+            availability: Ready,
+            cli_id: None,
+            command: "claude",
+            relative_paths: &[".claude", ".claude.json"],
+        },
+        ProductDefinition {
+            provider: KimiCode,
+            display_name: "Kimi Code",
+            availability: Ready,
+            cli_id: Some("kimi-code"),
+            command: "kimi",
+            relative_paths: &[".kimi", ".kimi-code", ".config/kimi"],
+        },
+        ProductDefinition {
+            provider: ZCode,
+            display_name: "ZCode",
+            availability: Ready,
+            cli_id: Some("zcode"),
+            command: "zcode",
+            relative_paths: &[".zcode", ".config/zcode"],
+        },
+        ProductDefinition {
+            provider: Grok,
+            display_name: "Grok",
+            availability: Ready,
+            cli_id: Some("grok"),
+            command: "grok",
+            relative_paths: &[".grok"],
+        },
+        ProductDefinition {
+            provider: Cursor,
+            display_name: "Cursor",
+            availability: PendingProtocol,
+            cli_id: None,
+            command: "cursor",
+            relative_paths: &[".cursor"],
+        },
     ]
+}
+
+pub fn cli_id(provider: RateLimitProvider) -> Option<&'static str> {
+    catalog()
+        .iter()
+        .find(|product| product.provider == provider)
+        .and_then(|product| product.cli_id)
+}
+
+pub fn cli_provider(id: &str) -> Option<RateLimitProvider> {
+    catalog()
+        .iter()
+        .find(|product| product.cli_id == Some(id))
+        .map(|product| product.provider)
 }
 
 pub fn initial_selection(products: &[QuotaProduct]) -> Vec<RateLimitProvider> {
@@ -149,7 +214,7 @@ pub fn update_selection(
 pub fn normalize_selection(
     selection: impl IntoIterator<Item = RateLimitProvider>,
 ) -> Vec<RateLimitProvider> {
-    let known: HashSet<_> = catalog().into_iter().map(|entry| entry.0).collect();
+    let known: HashSet<_> = catalog().iter().map(|entry| entry.provider).collect();
     let mut seen = HashSet::new();
     selection
         .into_iter()
@@ -158,38 +223,15 @@ pub fn normalize_selection(
         .collect()
 }
 
-fn is_detected(provider: RateLimitProvider, environment: &DiscoveryEnvironment) -> bool {
-    relative_paths(provider)
+fn is_detected(product: &ProductDefinition, environment: &DiscoveryEnvironment) -> bool {
+    product
+        .relative_paths
         .iter()
         .any(|relative| environment.home.join(relative).exists())
-        || application_paths(provider, environment)
+        || application_paths(product.provider, environment)
             .iter()
             .any(|path| path.exists())
-        || executable_names(provider)
-            .iter()
-            .any(|name| executable_exists(name, environment))
-}
-
-fn relative_paths(provider: RateLimitProvider) -> &'static [&'static str] {
-    match provider {
-        RateLimitProvider::Codex => &[".codex"],
-        RateLimitProvider::ClaudeCode => &[".claude", ".claude.json"],
-        RateLimitProvider::KimiCode => &[".kimi", ".kimi-code", ".config/kimi"],
-        RateLimitProvider::ZCode => &[".zcode", ".config/zcode"],
-        RateLimitProvider::Grok => &[".grok"],
-        RateLimitProvider::Cursor => &[".cursor"],
-    }
-}
-
-fn executable_names(provider: RateLimitProvider) -> &'static [&'static str] {
-    match provider {
-        RateLimitProvider::Codex => &["codex"],
-        RateLimitProvider::ClaudeCode => &["claude"],
-        RateLimitProvider::KimiCode => &["kimi"],
-        RateLimitProvider::ZCode => &["zcode"],
-        RateLimitProvider::Grok => &["grok"],
-        RateLimitProvider::Cursor => &["cursor"],
-    }
+        || executable_exists(product.command, environment)
 }
 
 fn application_paths(
@@ -261,6 +303,26 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    #[test]
+    fn catalog_routes_only_supported_cli_products_and_supplies_display_names() {
+        let mut ids = HashSet::new();
+        let mut providers = HashSet::new();
+        for product in catalog() {
+            assert!(providers.insert(product.provider));
+            assert!(!product.display_name.is_empty());
+            if let Some(id) = product.cli_id {
+                assert!(ids.insert(id));
+                assert_eq!(cli_provider(id), Some(product.provider));
+                assert_eq!(serde_json::to_value(product.provider).unwrap(), id);
+            }
+        }
+        assert_eq!(ids, HashSet::from(["kimi-code", "zcode", "grok"]));
+        assert_eq!(cli_id(RateLimitProvider::Cursor), None);
+        assert_eq!(cli_id(RateLimitProvider::Codex), None);
+        assert_eq!(cli_id(RateLimitProvider::ClaudeCode), None);
+        assert_eq!(cli_provider("unknown"), None);
+    }
+
     fn environment(root: &Path) -> DiscoveryEnvironment {
         DiscoveryEnvironment {
             home: root.join("home"),
@@ -312,16 +374,19 @@ mod tests {
         let products = vec![
             QuotaProduct {
                 provider: RateLimitProvider::Cursor,
+                display_name: "Cursor",
                 availability: QuotaProductAvailability::PendingProtocol,
                 is_detected: true,
             },
             QuotaProduct {
                 provider: RateLimitProvider::KimiCode,
+                display_name: "Kimi Code",
                 availability: QuotaProductAvailability::Ready,
                 is_detected: true,
             },
             QuotaProduct {
                 provider: RateLimitProvider::Grok,
+                display_name: "Grok",
                 availability: QuotaProductAvailability::Ready,
                 is_detected: true,
             },
