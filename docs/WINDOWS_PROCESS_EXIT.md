@@ -34,6 +34,12 @@ unrelated-process, and executable-unlock assertions. New tests simulate zero
 accounting with an unsignaled waitable handle, retain that handle over repeated
 termination calls, reject uncertain completion, exercise the timeout result,
 and confirm a managed Node cannot create a new child after admission closes.
+The admission fixture first runs the same child successfully with the limit
+open. After closing admission it rejects timeouts, requires the child body not
+to run, and checks that this private Job's `TotalTerminatedProcesses` increased
+by one (Windows' limit-violation counter). A generic `spawnSync` error without
+that counter change fails the test. This strengthened fixture needs a new
+native Windows run; earlier installer results do not validate it.
 The synthetic waitable-handle test is deterministic contract coverage, not a
 claim to reproduce every kernel teardown delay.
 

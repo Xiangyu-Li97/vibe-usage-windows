@@ -357,10 +357,39 @@ mod tests {
         use tokio::process::Command;
         let node = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/node/node.exe");
         let job = Job::new().unwrap();
-        // No child timeout: an admitted child exits immediately, while the
-        // outer Tokio deadline still fails a hung fixture. ETIMEDOUT therefore
-        // cannot be mistaken for the Job's admission rejection.
-        let script = "console.log('ready');process.stdin.once('data',()=>{const r=require('node:child_process').spawnSync(process.execPath,['-e','process.exit(0)']);console.log(r.error?'rejected':'admitted');});setInterval(()=>{},1000)";
+        // First prove the identical child works before applying the limit.
+        // A failed spawn alone cannot prove Job rejection (ENOENT, ETIMEDOUT,
+        // antivirus, etc.). Below we also require Windows' limit-violation
+        // counter to increase on this private Job. No inner spawn timeout.
+        let script = r#"
+            const spawn = () => require('node:child_process').spawnSync(
+                process.execPath, ['-e', "console.log('child-ran')"], {encoding:'utf8'});
+            const before = spawn();
+            console.log(!before.error && before.status === 0 && before.stdout.trim() === 'child-ran'
+                ? 'ready' : 'baseline-failed');
+            process.stdin.once('data', () => {
+                const after = spawn();
+                console.log(after.error && after.error.code !== 'ETIMEDOUT' && after.status === null
+                    && !after.stdout?.includes('child-ran') ? 'rejected' : 'admitted');
+            });
+            setInterval(() => {}, 1000);
+        "#;
+        let limit_violations = || {
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            assert_ne!(
+                unsafe {
+                    QueryInformationJobObject(
+                        job.handle(),
+                        JobObjectBasicAccountingInformation,
+                        &mut info as *mut _ as *mut _,
+                        size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0
+            );
+            info.TotalTerminatedProcesses
+        };
         let mut parent = Command::new(&node)
             .args(["-e", script])
             .stdin(Stdio::piped())
@@ -381,6 +410,7 @@ mod tests {
                 .as_deref(),
             Some("ready")
         );
+        let violations_before = limit_violations();
         job.close_admission().unwrap();
         assert!(parent.try_wait().unwrap().is_none());
         parent
@@ -398,6 +428,14 @@ mod tests {
                 .as_deref(),
             Some("rejected")
         );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while limit_violations() == violations_before {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("spawn error must correspond to a Job limit violation");
+        assert_eq!(limit_violations(), violations_before + 1);
         assert!(parent.try_wait().unwrap().is_none());
         job.terminate();
         tokio::time::timeout(Duration::from_secs(10), parent.wait())
