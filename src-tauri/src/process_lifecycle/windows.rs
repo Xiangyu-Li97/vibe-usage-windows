@@ -355,12 +355,69 @@ mod tests {
         use std::time::Duration;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::process::Command;
+        use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectAssociateCompletionPortInformation, JOBOBJECT_ASSOCIATE_COMPLETION_PORT,
+        };
+        use windows_sys::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT;
+        use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
         let node = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/node/node.exe");
         let job = Job::new().unwrap();
+        // Associate while the private Job is empty, before any child can emit
+        // notifications. The owned port and matching key isolate the evidence.
+        let raw_port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        assert!(!raw_port.is_null(), "{}", io::Error::last_os_error());
+        let port = unsafe { OwnedHandle::from_raw_handle(raw_port) };
+        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: job.handle(),
+            CompletionPort: port.as_raw_handle(),
+        };
+        assert_ne!(
+            unsafe {
+                SetInformationJobObject(
+                    job.handle(),
+                    JobObjectAssociateCompletionPortInformation,
+                    &association as *const _ as *const _,
+                    size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
+                )
+            },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+        let take_notification = || {
+            let mut message = 0;
+            let mut key = 0;
+            let mut overlapped = std::ptr::null_mut();
+            let ok = unsafe {
+                GetQueuedCompletionStatus(
+                    port.as_raw_handle(),
+                    &mut message,
+                    &mut key,
+                    &mut overlapped,
+                    0,
+                )
+            };
+            if ok == 0 {
+                assert_eq!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(WAIT_TIMEOUT as i32)
+                );
+                None
+            } else {
+                assert_eq!(
+                    key,
+                    job.handle() as usize,
+                    "notification from a different Job"
+                );
+                Some(message)
+            }
+        };
         // First prove the identical child works before applying the limit.
         // A failed spawn alone cannot prove Job rejection (ENOENT, ETIMEDOUT,
-        // antivirus, etc.). Below we also require Windows' limit-violation
-        // counter to increase on this private Job. No inner spawn timeout.
+        // antivirus, etc.). Below we require this private Job's active-process
+        // limit notification. No inner spawn timeout.
         let script = r#"
             const spawn = () => require('node:child_process').spawnSync(
                 process.execPath, ['-e', "console.log('child-ran')"], {encoding:'utf8'});
@@ -374,22 +431,6 @@ mod tests {
             });
             setInterval(() => {}, 1000);
         "#;
-        let limit_violations = || {
-            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-            assert_ne!(
-                unsafe {
-                    QueryInformationJobObject(
-                        job.handle(),
-                        JobObjectBasicAccountingInformation,
-                        &mut info as *mut _ as *mut _,
-                        size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                        std::ptr::null_mut(),
-                    )
-                },
-                0
-            );
-            info.TotalTerminatedProcesses
-        };
         let mut parent = Command::new(&node)
             .args(["-e", script])
             .stdin(Stdio::piped())
@@ -410,7 +451,9 @@ mod tests {
                 .as_deref(),
             Some("ready")
         );
-        let violations_before = limit_violations();
+        while let Some(message) = take_notification() {
+            assert_ne!(message, JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT);
+        }
         job.close_admission().unwrap();
         assert!(parent.try_wait().unwrap().is_none());
         parent
@@ -429,13 +472,15 @@ mod tests {
             Some("rejected")
         );
         tokio::time::timeout(Duration::from_secs(10), async {
-            while limit_violations() == violations_before {
+            loop {
+                if take_notification() == Some(JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT) {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("spawn error must correspond to a Job limit violation");
-        assert_eq!(limit_violations(), violations_before + 1);
+        .expect("spawn error must correspond to this Job's active-process limit notification");
         assert!(parent.try_wait().unwrap().is_none());
         job.terminate();
         tokio::time::timeout(Duration::from_secs(10), parent.wait())
