@@ -4,7 +4,7 @@
   "version": "0.5.14",
   "vibeUsageCliChannel": "latest",
   "vibeUsageCliVersion": "0.10.32-windows-acceptance.3",
-  "vibeUsageCliCommit": "77597a5d6d58",
+  "vibeUsageCliCommit": "3fb24f4e4121",
   "type": "module",
   "description": "Vibe Usage for Windows \u2014 AI coding tool token usage tracker (Windows port of the macOS Vibe Usage app)",
   "scripts": {
