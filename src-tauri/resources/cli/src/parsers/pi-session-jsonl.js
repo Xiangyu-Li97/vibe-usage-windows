@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { aggregateToBuckets, extractSessions } from './aggregate.js';
 import { projectFromCwd, toCount } from './fs-utils.js';
@@ -11,12 +11,13 @@ function warn(ctx, message) {
 }
 
 function findJsonlFiles(dir, includeFile, ctx) {
-  if (!existsSync(dir)) return [];
   let children;
   try {
     children = readdirSync(dir, { withFileTypes: true });
   } catch (err) {
-    warn(ctx, `${ctx.source}: cannot read directory ${dir}: ${err.message}`);
+    if (err.code !== 'ENOENT') {
+      warn(ctx, `${ctx.source}: cannot read directory ${dir}: ${err.message}`);
+    }
     return [];
   }
 
@@ -38,20 +39,40 @@ export function projectFromFirstDir(filePath, sessionsDir) {
   return first.split('-').filter(Boolean).at(-1) || 'unknown';
 }
 
+// Configured stores can overlap: an ancestor and its descendant, or two paths
+// that resolve to the same place through a symlink. Record-level dedup only
+// covers entries carrying an `id`, so the same anonymous record would be
+// counted once per path that reaches it. Collapse on the canonical file path
+// instead, which also folds symlinked duplicates of a single file.
+function canonicalFilePath(filePath) {
+  try {
+    return realpathSync.native(filePath);
+  } catch {
+    return filePath;
+  }
+}
+
 export async function parsePiSessionJsonl({
   source,
   sessionsDirs,
   includeFile = () => true,
   projectFromPath = projectFromFirstDir,
+  deduplicateCopiedSessions = false,
 }) {
   const ctx = { source, warnings: [], incomplete: false };
   const entriesById = new Map();
   const anonymousEntries = [];
   const eventsById = new Map();
   const anonymousEvents = [];
+  const seenFiles = new Set();
+  const recordOwners = new Map();
 
   for (const sessionsDir of sessionsDirs) {
     for (const filePath of findJsonlFiles(sessionsDir, includeFile, ctx)) {
+      const canonical = canonicalFilePath(filePath);
+      if (seenFiles.has(canonical)) continue;
+      seenFiles.add(canonical);
+
       let content;
       try {
         content = readFileSync(filePath, 'utf8');
@@ -62,6 +83,8 @@ export async function parsePiSessionJsonl({
 
       let sessionId = basename(filePath, '.jsonl');
       let project = projectFromPath(filePath, sessionsDir) || 'unknown';
+      let sessionStartedAt = Infinity;
+      let seenHeader = false;
 
       for (const line of content.split('\n')) {
         if (!line.trim()) continue;
@@ -71,18 +94,40 @@ export async function parsePiSessionJsonl({
         } catch {
           continue;
         }
+        if (!obj || typeof obj !== 'object') continue;
 
         if (obj.type === 'session') {
+          if (deduplicateCopiedSessions && seenHeader) continue;
+          seenHeader = true;
           if (obj.id) sessionId = String(obj.id);
           if (obj.cwd) project = projectFromCwd(obj.cwd);
+          const startedAt = new Date(obj.timestamp).getTime();
+          sessionStartedAt = Number.isFinite(startedAt) ? startedAt : Infinity;
           continue;
         }
         if (obj.type !== 'message' || !obj.message) continue;
 
         const message = obj.message;
-        const timestamp = new Date(obj.timestamp || message.timestamp || 0);
+        const rawTimestamp = obj.timestamp || message.timestamp;
+        const timestamp = new Date(rawTimestamp || 0);
         if (Number.isNaN(timestamp.getTime())) continue;
-        const recordId = obj.id ? `${sessionId}:${obj.id}` : null;
+        const model = message.model || message.modelId || obj.model || obj.modelId || 'unknown';
+        // Cola copies a transcript with a new session header but unchanged
+        // records. Its short message ids are only unique within a session, so
+        // cross-session dedup also requires time, parent, role, and model.
+        // All existing Pi-family callers retain sessionId:id identities.
+        const recordId = !obj.id ? null : deduplicateCopiedSessions && rawTimestamp
+          ? JSON.stringify([obj.id, timestamp.getTime(), obj.parentId ?? null, message.role, model])
+          : `${sessionId}:${obj.id}`;
+
+        if (deduplicateCopiedSessions && recordId) {
+          const owner = recordOwners.get(recordId);
+          if (!owner || sessionStartedAt < owner.startedAt
+            || (sessionStartedAt === owner.startedAt && sessionId < owner.sessionId)
+            || (sessionStartedAt === owner.startedAt && sessionId === owner.sessionId && canonical < owner.filePath)) {
+            recordOwners.set(recordId, { sessionId, project, startedAt: sessionStartedAt, filePath: canonical });
+          }
+        }
 
         if (message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult') {
           const event = {
@@ -99,7 +144,10 @@ export async function parsePiSessionJsonl({
         if (message.role !== 'assistant' || !message.usage) continue;
         const usage = message.usage;
         const inputTokens = toCount(usage.input) + toCount(usage.cacheWrite);
-        const reasoningOutputTokens = toCount(usage.reasoningTokens);
+        // Pi's Usage type names this field `reasoning` (a documented subset of
+        // `output`); older/adjacent stores wrote `reasoningTokens`. Reading only
+        // the latter left every Pi reasoning token inside outputTokens.
+        const reasoningOutputTokens = toCount(usage.reasoning ?? usage.reasoningTokens);
         // OMP/Pi usage.output includes reasoning; the shared bucket contract
         // stores non-reasoning output and reasoning separately.
         const outputTokens = Math.max(0, toCount(usage.output) - reasoningOutputTokens);
@@ -109,7 +157,7 @@ export async function parsePiSessionJsonl({
 
         const entry = {
           source,
-          model: message.model || message.modelId || obj.model || obj.modelId || 'unknown',
+          model,
           project,
           timestamp,
           inputTokens,
@@ -129,9 +177,18 @@ export async function parsePiSessionJsonl({
 
   const entries = [
     ...anonymousEntries,
-    ...[...entriesById.values()].map(({ entry }) => entry),
+    ...[...entriesById].map(([id, { entry }]) => {
+      const owner = recordOwners.get(id);
+      return owner ? { ...entry, project: owner.project } : entry;
+    }),
   ];
-  const events = [...anonymousEvents, ...eventsById.values()];
+  const events = [
+    ...anonymousEvents,
+    ...[...eventsById].map(([id, event]) => {
+      const owner = recordOwners.get(id);
+      return owner ? { ...event, sessionId: owner.sessionId, project: owner.project } : event;
+    }),
+  ];
   return {
     buckets: aggregateToBuckets(entries),
     sessions: extractSessions(events),
