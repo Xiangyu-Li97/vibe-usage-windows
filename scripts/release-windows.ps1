@@ -80,7 +80,7 @@ if (-not $ExternalTest) {
   node scripts/generate-updater-manifest.mjs $dest
 }
 
-Write-Host "`n✓ $dest" -ForegroundColor Green
+Write-Host "`n[ok] $dest" -ForegroundColor Green
 if (-not $ExternalTest) {
-  Write-Host "✓ latest.json" -ForegroundColor Green
+  Write-Host "[ok] latest.json" -ForegroundColor Green
 }

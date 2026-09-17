@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 function Ensure-Tool($name, $wingetId, $check) {
     if (Get-Command $check -ErrorAction SilentlyContinue) {
-        Write-Host "✓ $name already installed" -ForegroundColor Green
+        Write-Host "[ok] $name already installed" -ForegroundColor Green
         return
     }
     Write-Host "Installing $name..." -ForegroundColor Cyan
@@ -27,7 +27,7 @@ if (-not $vcTools) {
         --accept-source-agreements --accept-package-agreements `
         --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 } else {
-    Write-Host "✓ Visual C++ Build Tools already installed" -ForegroundColor Green
+    Write-Host "[ok] Visual C++ Build Tools already installed" -ForegroundColor Green
 }
 
 # Refresh the common per-user locations so a first run can finish setup in the
