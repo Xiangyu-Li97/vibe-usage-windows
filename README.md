@@ -23,7 +23,8 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 系统托盘常驻，点击托盘图标打开用量面板
 - 后台每 30 分钟自动同步数据，也可手动「更新数据」
 - 弹出窗口查看费用、总 Token、缓存 Token、趋势图表
-- **订阅配额监控**：自动检测 Codex、Claude Code、Kimi Code、ZCode、Grok 与 Cursor，并允许最多选择两个显示；Cursor 当前明确标记为待接入
+- **订阅配额监控**：自动检测 Codex、Claude Code、Kimi Code、ZCode、Grok 与 Cursor，可任意勾选，面板为每个已勾选产品各显示一张卡片并横向滚动；Cursor 当前明确标记为待接入
+- 未读到数据时不猜：只有数据源明确报告配额用尽才显示「已用满」，其余情况按来源分别显示「正在读取…」「当前没有生效的额度窗口」「暂未读取到订阅配额数据」或「未检测到本机安装或登录」
 - Codex / Claude 使用只读原生适配；Kimi Code 使用官方 CLI 登录；Grok 只读官方 CLI 的结构化配额日志；ZCode 使用用户明确提供的 BigModel（国内）或 Z.ai（海外）Coding Plan Key
 - ZCode Key 只保存在当前 Windows 用户的 Credential Manager 中，不写入设置文件、不回显，也不会跨区域试发
 - 支持今天 / 24H / 7D / 30D / 90D / 自定义日期，以及终端 / 工具 / 模型 / 项目筛选

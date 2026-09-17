@@ -1,6 +1,6 @@
 # macOS ↔ Windows 对齐说明 (Parity Notes)
 
-本项目以 `vibe-usage-app`（macOS, SwiftUI, v0.5.1）为功能与视觉基准。本文档记录 1:1 对齐的映射关系与少数平台差异。
+本项目以 `vibe-usage-app`（macOS, SwiftUI, v0.6.1）为功能与视觉基准。本文档记录 1:1 对齐的映射关系与少数平台差异。
 
 ## 视觉常量（源自 Swift 源码，落在 `tailwind.config.cjs`）
 
@@ -38,13 +38,17 @@
 | `BarChartView` | `components/TrendChart.tsx`（自绘 div 堆叠条） |
 | `DistributionChartsView` | `components/DistributionGrid.tsx`（自绘 SVG donut） |
 | 长名字 `.truncationMode(.middle)` + `.help()`（分布图例/筛选选项，同前缀项目名区分信息在尾部） | `components/MiddleTruncateLabel.tsx`（head 截断 + tail 6 字符不收缩 + `title` 悬浮全名） |
-| `SettingsView` (NSWindow 460×480) | `SettingsApp`（独立 WebView 窗口 460×620；Windows 保持首屏展示「关于」区域） |
+| `SettingsView` (NSWindow 460×480) | `SettingsApp`（独立 WebView 窗口 460×620，信息架构 1:1：数据同步 → 订阅配额 → 常规 → 数据目录（高级）→ 测试诊断 → 关于 → 危险操作） |
+| `SettingsView.zCodeRow` / `compactQuotaStatus`（收起显示「待配置/已配置」，展开才是区域 + Key 表单） | `SettingsApp` 的 ZCode 行 + `lib/quotaProducts.ts:compactQuotaStatus` |
 | `AppState` | `state/AppStateContext.tsx` + Rust `AppCtx` |
 | `APIClient` | `services/api_client.rs` |
 | `SyncEngine`（npx/bun x，120s） | `services/sync_engine.rs`（内置 CLI + node，120s，CREATE_NO_WINDOW） |
 | 设置中的隔离运行时目录（Codex / Grok / Antigravity） | 原生文件夹选择器 + 同一组 CLI `config roots/add-root/remove-root` 命令 |
 | `SyncScheduler`（30 分钟） | `services/scheduler.rs` |
-| 六产品订阅配额目录与两项选择 | Codex / Claude 原生适配；Kimi / ZCode / Grok 使用版本化 typed CLI bridge；Cursor 独立显示待接入 |
+| 六产品订阅配额目录与任意数量选择 | Codex / Claude 原生适配；Kimi / ZCode / Grok 使用版本化 typed CLI bridge；Cursor 独立显示待接入 |
+| `RateLimitCardView.cardWidth = 240` + 单行 Grid + `ScrollView(.horizontal, showsIndicators: count > 2)` | `components/RateLimitCard.tsx`：每产品一张固定 240px 卡片，`flex items-stretch overflow-x-auto`（两卡合计 488px = 面板内容宽） |
+| `RateLimitCardView.emptyStateText(for:isDetected:)` / `ProviderRateLimit.EmptyReason` | `lib/quotaProducts.ts:quotaEmptyStateText` + Rust `RateLimitEmptyReason`（`crates/core/src/rate_limit/mod.rs`） |
+| `RateLimitCardView.ProviderIcon`（官方 28/56px 资产，卡片与设置共用） | `components/ProviderIcon.tsx`（`src/assets/*-icon.png` 为官方资产 @2x=56px，卡片 14px 显示）+ 符号兜底 |
 | ZCode 两区域 Key | BigModel / Z.ai 分开存入 Windows Credential Manager；只向明确选择的区域请求注入 |
 | `RuntimeDetector` | `crates/core/runtime.rs`（Windows 路径 + 捆绑 node 兜底） |
 | `CodexRateLimitReader` | `crates/core/rate_limit/codex.rs` |
@@ -63,6 +67,9 @@
 5. **自更新**：Sparkle → 自研（GitHub Releases latest.json、SHA-256 校验、启动 NSIS 安装器）。UI 入口一致（footer「发现更新」+ 设置「检查更新」）。
 6. **面板关闭按钮**：macOS footer「关闭」= 退出应用（`NSApplication.terminate`）；Windows 同义（退出到无进程）。托盘常驻由开机自启保证。
 7. **配额悬停 tooltip**：交互与内容 1:1；Windows 使用 mouse enter/leave（无 NSTrackingArea 差异）。
+8. **配额卡片数量**：与 0.6.1 相同，不设上限、不折叠；选择顺序即卡片顺序，多于两张时横向滚动。首次启动勾选全部「已检测且已就绪」的产品（ZCode 未配置 Key 时除外，与 macOS 一致）。
+9. **设置页「托盘」分组**：macOS 的「菜单栏」对应 Windows 的「托盘」，两项合并进「常规」，不单列分组。
+10. **官方图标资产**：六家图标直接复用 macOS 已验收的官方标准资产（@2x 56px，透明底 + 官方容器），本仓库不改色、不加边框；卡片与设置页共用同一个 `ProviderIcon`。
 
 ## CLI Windows 补丁（vendored，见 `scripts/vendor-cli.mjs`）
 
