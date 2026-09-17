@@ -65,7 +65,7 @@
 
 ## CLI Windows 补丁（vendored，见 `scripts/vendor-cli.mjs`）
 
-上游 `@vibe-cafe/vibe-usage@0.10.31`（快照版本以 `package.json` 的 `vibeUsageCliVersion` 为准）的 Windows 问题，vendor 时自动打补丁（补丁锚点丢失会构建失败，防止 CLI 升级后静默失效）：
+上游 `@vibe-cafe/vibe-usage@0.11.0`（快照版本以 `package.json` 的 `vibeUsageCliVersion` 为准）的 Windows 问题，vendor 时自动打补丁（补丁锚点丢失会构建失败，防止 CLI 升级后静默失效）：
 
 1. `src/init.js` `openBrowser`：`execFile('start')` → `cmd /c start ""`（`start` 是 cmd 内建命令）
 2. `src/parsers/codex.js` `extractProject` 与 `src/parsers/qwen-code.js`：`split('/')` → `split(/[\\/]/)`（Windows cwd 反斜杠）
@@ -73,7 +73,7 @@
 4. `src/parsers/amp.js`：增加 `%LOCALAPPDATA%\amp\threads` 探测（原 XDG 路径保底）
 5. `src/state.js`：`STATE_DIR` 增加 `VIBE_USAGE_CONFIG_DIR` 回退，使 CLI 状态与配置落在同一应用配置目录；`src/config.js` / `src/state.js` 另含 `config.json` / `state.json` 路径被误创建为目录时的 EISDIR 自愈
 
-其中 `VIBE_USAGE_CONFIG_DIR` 的支持程度在两个文件上并不相同：`src/config.js` 的 `CONFIG_DIR` 上游 0.10.31 已原生读取该变量，而 `src/state.js` 的 `STATE_DIR` 上游只识别 `VIBE_USAGE_STATE_DIR`，故第 5 项的回退仍由本仓库补丁提供，不能因上游版本较新而删除。以上补丁建议同步提交上游 PR；合并后 vendor 脚本的补丁会因锚点变化自动报错提醒移除。
+其中 `VIBE_USAGE_CONFIG_DIR` 的支持程度在两个文件上并不相同：`src/config.js` 的 `CONFIG_DIR` 上游（0.10.31 起，含 0.11.0）已原生读取该变量，而 `src/state.js` 的 `STATE_DIR` 上游只识别 `VIBE_USAGE_STATE_DIR`，故第 5 项的回退仍由本仓库补丁提供，不能因上游版本较新而删除。以上补丁建议同步提交上游 PR；合并后 vendor 脚本的补丁会因锚点变化自动报错提醒移除。
 
 ## 共享文件契约（与 CLI / macOS 版一致）
 
