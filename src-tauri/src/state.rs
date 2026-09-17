@@ -1,12 +1,14 @@
 //! Shared app state (counterpart of AppState.swift's service wiring).
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use std::time::Instant;
 use vibe_core::config::ConfigManager;
-use vibe_core::ProviderRateLimit;
+use vibe_core::quota_product::{normalize_selection, ZCodeQuotaRegion};
+use vibe_core::{ProviderRateLimit, RateLimitProvider};
 
 pub const IS_DEV: bool = cfg!(debug_assertions);
 
@@ -20,6 +22,9 @@ pub struct AppSettings {
     pub show_tokens_in_tray: bool,
     pub codex_rate_limit_enabled: bool,
     pub claude_rate_limit_enabled: bool,
+    pub selected_quota_product_ids: Vec<RateLimitProvider>,
+    pub quota_selection_initialized: bool,
+    pub z_code_quota_region: ZCodeQuotaRegion,
 }
 
 impl Default for AppSettings {
@@ -29,7 +34,24 @@ impl Default for AppSettings {
             show_tokens_in_tray: false,
             codex_rate_limit_enabled: true,
             claude_rate_limit_enabled: false,
+            selected_quota_product_ids: Vec::new(),
+            quota_selection_initialized: false,
+            z_code_quota_region: ZCodeQuotaRegion::default(),
         }
+    }
+}
+
+impl AppSettings {
+    pub fn set_quota_selection(&mut self, selection: Vec<RateLimitProvider>) {
+        self.selected_quota_product_ids = normalize_selection(selection);
+        self.quota_selection_initialized = true;
+        // Preserve downgrade behavior for the original two toggles.
+        self.codex_rate_limit_enabled = self
+            .selected_quota_product_ids
+            .contains(&RateLimitProvider::Codex);
+        self.claude_rate_limit_enabled = self
+            .selected_quota_product_ids
+            .contains(&RateLimitProvider::ClaudeCode);
     }
 }
 
@@ -76,8 +98,30 @@ pub struct UpdateInfo {
 
 #[derive(Default)]
 pub struct RateLimitCache {
-    pub codex: Option<(ProviderRateLimit, Instant)>,
-    pub claude: Option<(ProviderRateLimit, Instant)>,
+    pub snapshots: HashMap<RateLimitProvider, (ProviderRateLimit, Instant)>,
+    zcode_generation: u64,
+}
+
+impl RateLimitCache {
+    pub fn zcode_generation(&self) -> u64 {
+        self.zcode_generation
+    }
+
+    /// Called while holding settings, before exposing a changed region/key.
+    pub fn invalidate_zcode(&mut self) {
+        self.zcode_generation += 1;
+        self.snapshots.remove(&RateLimitProvider::ZCode);
+    }
+
+    pub fn store(&mut self, snapshot: ProviderRateLimit, zcode_generation: u64) {
+        if snapshot.provider == RateLimitProvider::ZCode
+            && zcode_generation != self.zcode_generation
+        {
+            return;
+        }
+        self.snapshots
+            .insert(snapshot.provider, (snapshot, Instant::now()));
+    }
 }
 
 pub struct AppCtx {
@@ -104,10 +148,38 @@ pub struct AppCtx {
 impl AppCtx {
     pub fn new(app_config_dir: PathBuf) -> Self {
         let settings_path = app_config_dir.join("settings.json");
-        let settings = std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
+        let raw_settings = std::fs::read_to_string(&settings_path).ok();
+        let had_legacy_selection = raw_settings
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| value.as_object().cloned())
+            .is_some_and(|object| {
+                object.contains_key("codexRateLimitEnabled")
+                    || object.contains_key("claudeRateLimitEnabled")
+            });
+        let mut settings: AppSettings = raw_settings
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
             .unwrap_or_default();
+        let migrated_legacy_selection =
+            !settings.quota_selection_initialized && had_legacy_selection;
+        if migrated_legacy_selection {
+            let selection = [
+                settings
+                    .codex_rate_limit_enabled
+                    .then_some(RateLimitProvider::Codex),
+                settings
+                    .claude_rate_limit_enabled
+                    .then_some(RateLimitProvider::ClaudeCode),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            settings.set_quota_selection(selection);
+            if let Ok(data) = serde_json::to_string_pretty(&settings) {
+                let _ = vibe_core::config::atomic_write(&settings_path, data.as_bytes());
+            }
+        }
         Self {
             config: ConfigManager::new(IS_DEV),
             http: reqwest::Client::builder()
@@ -146,5 +218,94 @@ impl AppCtx {
         } else {
             Some(cleaned)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn region_or_key_change_discards_cached_and_in_flight_zcode_results() {
+        use vibe_core::RateLimitStatus;
+        let mut cache = RateLimitCache::default();
+        let old_request = cache.zcode_generation();
+        let mut old_account =
+            ProviderRateLimit::empty(RateLimitProvider::ZCode, RateLimitStatus::Ok);
+        old_account.plan_label = Some("old account".into());
+        cache.store(old_account.clone(), old_request);
+        cache.invalidate_zcode();
+        assert!(!cache.snapshots.contains_key(&RateLimitProvider::ZCode));
+        cache.store(old_account, old_request);
+        assert!(!cache.snapshots.contains_key(&RateLimitProvider::ZCode));
+        cache.store(
+            ProviderRateLimit::empty(RateLimitProvider::Grok, RateLimitStatus::NoData),
+            old_request,
+        );
+        assert!(cache.snapshots.contains_key(&RateLimitProvider::Grok));
+        let current_request = cache.zcode_generation();
+        cache.store(
+            ProviderRateLimit::empty(RateLimitProvider::ZCode, RateLimitStatus::RetryableError),
+            current_request,
+        );
+        assert_eq!(
+            cache.snapshots[&RateLimitProvider::ZCode].0.status,
+            RateLimitStatus::RetryableError
+        );
+    }
+
+    #[test]
+    fn refresh_failure_replaces_old_success_instead_of_reviving_expired_meters() {
+        use vibe_core::RateLimitStatus;
+        let mut cache = RateLimitCache::default();
+        for provider in [
+            RateLimitProvider::KimiCode,
+            RateLimitProvider::ZCode,
+            RateLimitProvider::Grok,
+        ] {
+            cache.store(ProviderRateLimit::empty(provider, RateLimitStatus::Ok), 0);
+            cache.store(
+                ProviderRateLimit::empty(provider, RateLimitStatus::RetryableError),
+                0,
+            );
+            assert_eq!(
+                cache.snapshots[&provider].0.status,
+                RateLimitStatus::RetryableError
+            );
+        }
+    }
+
+    #[test]
+    fn migrates_legacy_provider_toggles_once() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("settings.json"),
+            r#"{"codexRateLimitEnabled":false,"claudeRateLimitEnabled":true}"#,
+        )
+        .unwrap();
+
+        let ctx = AppCtx::new(directory.path().to_path_buf());
+        let settings = ctx.settings.lock().unwrap().clone();
+        assert!(settings.quota_selection_initialized);
+        assert_eq!(
+            settings.selected_quota_product_ids,
+            vec![RateLimitProvider::ClaudeCode]
+        );
+    }
+
+    #[test]
+    fn preserves_an_intentionally_empty_new_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("settings.json"),
+            r#"{"selectedQuotaProductIds":[],"quotaSelectionInitialized":true}"#,
+        )
+        .unwrap();
+
+        let ctx = AppCtx::new(directory.path().to_path_buf());
+        let settings = ctx.settings.lock().unwrap().clone();
+        assert!(settings.quota_selection_initialized);
+        assert!(settings.selected_quota_product_ids.is_empty());
     }
 }

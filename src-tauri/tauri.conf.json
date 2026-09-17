@@ -66,6 +66,7 @@
         "silent": true
       },
       "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh",
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": false

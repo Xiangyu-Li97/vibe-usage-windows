@@ -4,10 +4,13 @@
 //! Tauri shell (`src-tauri`) wires these pieces to windows/tray/network.
 
 pub mod config;
+pub mod quota_product;
 pub mod rate_limit;
 pub mod runtime;
 pub mod statusline_hook;
 pub mod tray_text;
 pub mod version;
 
-pub use rate_limit::{ProviderRateLimit, RateLimitProvider, RateLimitStatus, RateLimitWindow};
+pub use rate_limit::{
+    ProviderRateLimit, RateLimitMeter, RateLimitProvider, RateLimitStatus, RateLimitWindow,
+};

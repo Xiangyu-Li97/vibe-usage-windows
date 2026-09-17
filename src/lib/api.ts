@@ -7,10 +7,14 @@ import {
   AppStatus,
   ExtraRoots,
   ProviderRateLimit,
+  QuotaProduct,
+  RateLimitProvider,
   SyncState,
   UpdateInfo,
   UsageQuery,
   UsageResponse,
+  ZCodeCredentialStatus,
+  ZCodeQuotaRegion,
 } from "./types";
 
 export const api = {
@@ -32,6 +36,15 @@ export const api = {
   // Rate limits ---------------------------------------------------------------
   getRateLimits: (force: boolean) => invoke<ProviderRateLimit[]>("get_rate_limits", { force }),
   enableClaudeRateLimit: () => invoke<ProviderRateLimit[]>("enable_claude_rate_limit"),
+  getQuotaProducts: () => invoke<QuotaProduct[]>("get_quota_products"),
+  setQuotaProductSelected: (provider: RateLimitProvider, selected: boolean) =>
+    invoke<ProviderRateLimit[]>("set_quota_product_selected", { provider, selected }),
+  getZCodeCredentialStatus: () =>
+    invoke<ZCodeCredentialStatus>("get_zcode_credential_status"),
+  setZCodeQuotaRegion: (region: ZCodeQuotaRegion) =>
+    invoke<ProviderRateLimit[]>("set_zcode_quota_region", { region }),
+  setZCodeApiKey: (region: ZCodeQuotaRegion, apiKey: string | null) =>
+    invoke<ProviderRateLimit[]>("set_zcode_api_key", { region, apiKey }),
 
   // Settings ------------------------------------------------------------------
   getSettings: () => invoke<AppSettings>("get_settings"),
@@ -50,6 +63,8 @@ export const api = {
   openSettingsWindow: () => invoke<void>("open_settings_window"),
   hidePanel: () => invoke<void>("hide_panel"),
   quitApp: () => invoke<void>("quit_app"),
+  exportTestDiagnostics: (destination: string) =>
+    invoke<void>("export_test_diagnostics", { destination }),
 
   // Updates -----------------------------------------------------------------------
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
@@ -78,6 +93,11 @@ export function onUpdateAvailable(handler: (u: UpdateInfo) => void): Promise<Unl
 
 export function onSettingsUpdated(handler: (settings: AppSettings) => void): Promise<UnlistenFn> {
   return listen<AppSettings>("settings-updated", (e) => handler(e.payload));
+}
+
+/** Fired whenever the already-loaded settings window is made visible. */
+export function onSettingsShown(handler: () => void): Promise<UnlistenFn> {
+  return listen("settings-shown", () => handler());
 }
 
 /** Fired by Rust when the panel window is shown (popover-open refresh path). */

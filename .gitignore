@@ -6,3 +6,6 @@ src-tauri/resources/node/
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Local acceptance receipts and installers are never source files.
+/win_test/
