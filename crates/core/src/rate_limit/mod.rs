@@ -61,6 +61,24 @@ pub enum RateLimitStatus {
     Error { message: String },
 }
 
+/// Why a source that *did* answer had no window to draw, when it can say.
+///
+/// Codex's live usage endpoint reports enforced windows exhaustively and its
+/// `rate_limit` object carries `allowed` / `limit_reached`, so an answer
+/// without any window is a fact — "used up for this period" or "nothing
+/// enforced right now" — not a read failure. Every other source (session
+/// JSONL, on-disk cache, the CLI-backed products) cannot tell the two apart
+/// from "that product has no data here", so it leaves this `None` and the card
+/// stays neutral rather than guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RateLimitEmptyReason {
+    /// `limit_reached == true`: this period's quota is consumed.
+    LimitReached,
+    /// The endpoint answered without enforcing any window.
+    NoWindow,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRateLimit {
@@ -81,6 +99,9 @@ pub struct ProviderRateLimit {
     pub five_hour_not_enforced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_credits_count: Option<u64>,
+    /// Absent means "the source did not say" — the UI must not render a verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<RateLimitEmptyReason>,
     pub status: RateLimitStatus,
 }
 
@@ -96,6 +117,7 @@ impl ProviderRateLimit {
             fetched_at: None,
             five_hour_not_enforced: false,
             reset_credits_count: None,
+            empty_reason: None,
             status,
         }
     }

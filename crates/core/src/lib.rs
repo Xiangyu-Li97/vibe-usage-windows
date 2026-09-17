@@ -12,5 +12,6 @@ pub mod tray_text;
 pub mod version;
 
 pub use rate_limit::{
-    ProviderRateLimit, RateLimitMeter, RateLimitProvider, RateLimitStatus, RateLimitWindow,
+    ProviderRateLimit, RateLimitEmptyReason, RateLimitMeter, RateLimitProvider, RateLimitStatus,
+    RateLimitWindow,
 };

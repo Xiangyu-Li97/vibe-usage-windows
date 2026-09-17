@@ -1,4 +1,4 @@
-//! Local-only subscription product discovery and two-slot selection policy.
+//! Local-only subscription product discovery and product selection policy.
 //! Discovery checks conventional files/apps/commands but never opens a
 //! credential store, reads credential contents, or performs network I/O.
 
@@ -6,8 +6,6 @@ use crate::RateLimitProvider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-
-pub const MAXIMUM_SELECTION_COUNT: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ZCodeQuotaRegion {
@@ -193,6 +191,10 @@ pub fn initial_selection(products: &[QuotaProduct]) -> Vec<RateLimitProvider> {
     )
 }
 
+/// Apply one explicit user choice to the display list. Detection is only a
+/// first-launch recommendation: the manual selector must remain usable when
+/// discovery is incomplete. Every selection is kept — the panel scrolls, so
+/// there is no reason to evict an earlier choice to make room.
 pub fn update_selection(
     selection: &[RateLimitProvider],
     provider: RateLimitProvider,
@@ -203,9 +205,6 @@ pub fn update_selection(
         .filter(|value| *value != provider)
         .collect::<Vec<_>>();
     if selected {
-        while next.len() >= MAXIMUM_SELECTION_COUNT {
-            next.remove(0);
-        }
         next.push(provider);
     }
     normalize_selection(next)
@@ -219,7 +218,6 @@ pub fn normalize_selection(
     selection
         .into_iter()
         .filter(|provider| known.contains(provider) && seen.insert(*provider))
-        .take(MAXIMUM_SELECTION_COUNT)
         .collect()
 }
 
@@ -398,27 +396,41 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_third_product_keeps_the_two_most_recent() {
+    fn selecting_a_third_product_keeps_every_choice_in_order() {
         assert_eq!(
             update_selection(
                 &[RateLimitProvider::Codex, RateLimitProvider::ClaudeCode],
                 RateLimitProvider::Grok,
                 true,
             ),
-            vec![RateLimitProvider::ClaudeCode, RateLimitProvider::Grok]
+            vec![
+                RateLimitProvider::Codex,
+                RateLimitProvider::ClaudeCode,
+                RateLimitProvider::Grok
+            ]
         );
     }
 
     #[test]
-    fn selection_is_deduplicated_and_capped() {
+    fn selection_is_deduplicated_without_evicting_earlier_choices() {
         assert_eq!(
             normalize_selection([
                 RateLimitProvider::Codex,
                 RateLimitProvider::Codex,
                 RateLimitProvider::ClaudeCode,
                 RateLimitProvider::Grok,
+                RateLimitProvider::KimiCode,
+                RateLimitProvider::ZCode,
+                RateLimitProvider::Cursor,
             ]),
-            vec![RateLimitProvider::Codex, RateLimitProvider::ClaudeCode]
+            vec![
+                RateLimitProvider::Codex,
+                RateLimitProvider::ClaudeCode,
+                RateLimitProvider::Grok,
+                RateLimitProvider::KimiCode,
+                RateLimitProvider::ZCode,
+                RateLimitProvider::Cursor
+            ]
         );
     }
 }

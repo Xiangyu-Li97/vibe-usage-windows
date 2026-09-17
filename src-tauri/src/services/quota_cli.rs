@@ -224,6 +224,7 @@ fn map_product(product: Product) -> Result<ProviderRateLimit, FetchError> {
         fetched_at: parse_epoch(&product.fetched_at),
         five_hour_not_enforced: false,
         reset_credits_count: None,
+        empty_reason: None,
         status,
     })
 }
