@@ -71,6 +71,7 @@ pub fn read_from(capture_file: &Path, enabled: bool, now: f64) -> ProviderRateLi
         fetched_at: None,
         five_hour_not_enforced: false,
         reset_credits_count: None,
+        empty_reason: None,
         status: RateLimitStatus::Ok,
     }
 }

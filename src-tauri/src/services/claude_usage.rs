@@ -219,6 +219,8 @@ fn parse_payload(root: &Value, now: f64) -> Option<ProviderRateLimit> {
         fetched_at: Some(now),
         five_hour_not_enforced: false,
         reset_credits_count: None,
+        // A JSONL/cache snapshot cannot tell "used up" from "nothing here".
+        empty_reason: None,
         status: RateLimitStatus::Ok,
     })
 }
@@ -276,6 +278,8 @@ fn cached_snapshot_from(path: &Path, now: f64) -> Option<ProviderRateLimit> {
         fetched_at: Some(fetched_at),
         five_hour_not_enforced: false,
         reset_credits_count: None,
+        // A JSONL/cache snapshot cannot tell "used up" from "nothing here".
+        empty_reason: None,
         status: RateLimitStatus::Ok,
     })
 }

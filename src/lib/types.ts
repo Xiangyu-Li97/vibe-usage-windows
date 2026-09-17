@@ -196,8 +196,20 @@ export type RateLimitStatus =
   | { kind: "retryableError" }
   | { kind: "error"; message: string };
 
+/**
+ * Why a source that *did* answer had no window to draw, when it can say
+ * (mirrors RateLimit.swift's EmptyReason). Codex's live usage endpoint reports
+ * enforced windows exhaustively and carries `allowed` / `limit_reached`, so an
+ * answer without any window is a fact. Every other source cannot tell
+ * "used up" apart from "nothing here", so it leaves this null and the card
+ * stays neutral rather than guessing.
+ */
+export type RateLimitEmptyReason = "limitReached" | "noWindow";
+
 export interface ProviderRateLimit {
   provider: RateLimitProvider;
+  /** Absent/null means "the source did not say" — never render a verdict. */
+  emptyReason?: RateLimitEmptyReason | null;
   meters?: RateLimitMeter[];
   fiveHour?: RateLimitWindow | null;
   sevenDay?: RateLimitWindow | null;

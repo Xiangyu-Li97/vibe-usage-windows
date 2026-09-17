@@ -175,7 +175,7 @@ pub async fn get_rate_limits(app: &AppHandle, force: bool) -> Vec<ProviderRateLi
 }
 
 /// Compatibility command retained for older frontends. New UI uses the
-/// shared two-slot selector.
+/// shared product selector.
 pub async fn enable_claude(app: &AppHandle) -> Result<Vec<ProviderRateLimit>, String> {
     {
         let ctx = app.state::<AppCtx>();

@@ -3,7 +3,7 @@
 // equivalent (no Dock) and is intentionally omitted.
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronRight, RefreshCw } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, onDeviceLink, onSettingsShown, onSyncState } from "./lib/api";
 import { formatInvokeError } from "./lib/errors";
@@ -19,11 +19,8 @@ import {
   ZCodeQuotaRegion,
 } from "./lib/types";
 import { formatRelativeTime } from "./lib/formatters";
-import {
-  MAX_QUOTA_SELECTION,
-  isZCodeConfigured,
-  quotaProductStatusText,
-} from "./lib/quotaProducts";
+import { compactQuotaStatus, isZCodeConfigured, quotaProductStatusText } from "./lib/quotaProducts";
+import { ProviderIcon } from "./components/ProviderIcon";
 
 export function SettingsApp() {
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -49,6 +46,9 @@ export function SettingsApp() {
   const [extraRoots, setExtraRoots] = useState<ExtraRoots>({});
   const [extraRootsBusy, setExtraRootsBusy] = useState(false);
   const [extraRootsError, setExtraRootsError] = useState<string | null>(null);
+  const [isZCodeExpanded, setZCodeExpanded] = useState(false);
+  const [isQuotaSourcesExpanded, setQuotaSourcesExpanded] = useState(false);
+  const [isIsolatedRootsExpanded, setIsIsolatedRootsExpanded] = useState(false);
 
   const reload = useCallback(async () => {
     // Defaults are initialized by the backend before any window starts.
@@ -299,14 +299,24 @@ export function SettingsApp() {
     }
   };
 
+  const region = settings?.zCodeQuotaRegion ?? "bigModel";
+  const zCodeConfigured = isZCodeConfigured(zCodeStatus, region);
+  const zCodeProduct = quotaProducts.find((product) => product.provider === "zcode");
+  const isolatedRootCount = Object.values(extraRoots).reduce(
+    (total, paths) => total + (paths?.length ?? 0),
+    0,
+  );
+  const isolatedRootsSummary = isolatedRootCount === 0 ? "未添加" : `${isolatedRootCount} 个目录`;
+
   return (
     <div
       className="h-screen overflow-hidden font-sans text-[13px]"
       style={{ background: "#1C1C1E", color: "#E8E8E8" }}
     >
       <div className="no-scrollbar mx-auto flex h-full max-w-[430px] flex-col gap-4 overflow-y-auto px-4 py-4">
-        {/* 同步 */}
-        <Section title="同步">
+        {/* 数据同步 — account key plus sync health; the former standalone
+            「上次同步」 row rides along as a caption instead of a full row. */}
+        <Section title="数据同步">
           <Row label="API Key">
             <div className="flex flex-col items-end gap-1.5">
               <div className="flex items-center gap-2">
@@ -328,166 +338,168 @@ export function SettingsApp() {
               )}
             </div>
           </Row>
-          <Row label="状态">
-            <span className="flex items-center gap-1 text-xs" style={{ color: "#B0B0B0" }}>
-              {syncState.status === "syncing" ? (
-                <>
-                  <div className="spinner h-3 w-3" /> 同步中...
-                </>
-              ) : syncState.status === "error" ? (
-                <>
-                  <AlertCircle size={13} color="#EF4444" />
-                  <span className="max-w-[260px] truncate">{syncState.message ?? "错误"}</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 size={13} color="#34C759" />
-                  {syncState.status === "success" ? "同步成功" : "正常"}
-                </>
-              )}
-            </span>
-          </Row>
-          {syncState.lastSyncAt && (
-            <Row label="上次同步">
-              <span className="text-xs" style={{ color: "#9E9E9E" }}>
-                {formatRelativeTime(new Date(syncState.lastSyncAt))}
+          <Row label="同步状态">
+            <div className="flex flex-col items-end gap-0.5">
+              <span className="flex items-center gap-1 text-xs" style={{ color: "#B0B0B0" }}>
+                {syncState.status === "syncing" ? (
+                  <>
+                    <div className="spinner h-3 w-3" /> 同步中...
+                  </>
+                ) : syncState.status === "error" ? (
+                  <>
+                    <AlertCircle size={13} color="#EF4444" />
+                    <span className="max-w-[260px] truncate">{syncState.message ?? "错误"}</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={13} color="#34C759" />
+                    {syncState.status === "success" ? "同步成功" : "正常"}
+                  </>
+                )}
               </span>
-            </Row>
-          )}
-        </Section>
-
-        <Section
-          title="隔离运行时目录"
-          footer="可为每种工具添加多个 Multica 或其他隔离目录；默认目录仍会照常统计。"
-        >
-          {([
-            ["codex", "Codex"],
-            ["grok", "Grok"],
-            ["antigravity", "Antigravity / AGY"],
-          ] as const).map(([source, label]) => (
-            <div key={source} className="flex flex-col gap-2 px-3 py-2" style={{ borderColor: "#3A3A3C" }}>
-              <div className="flex items-center justify-between">
-                <span>{label}</span>
-                <SmallButton disabled={extraRootsBusy} onClick={() => void addExtraRoot(source)}>
-                  添加目录…
-                </SmallButton>
-              </div>
-              {(extraRoots[source] ?? []).map((path) => (
-                <div key={path} className="flex min-w-0 items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-400" title={path}>
-                    {path}
-                  </span>
-                  <button
-                    className="shrink-0 text-xs text-red-400 disabled:opacity-50"
-                    disabled={extraRootsBusy}
-                    onClick={() => void removeExtraRoot(source, path)}
-                  >
-                    移除
-                  </button>
-                </div>
-              ))}
-            </div>
-          ))}
-          {extraRootsError && <div className="px-3 py-2 text-xs text-red-400">{extraRootsError}</div>}
-        </Section>
-
-        {/* 订阅配额 */}
-        <Section
-          title={`订阅配额（${settings?.selectedQuotaProductIds.length ?? 0}/${MAX_QUOTA_SELECTION}）`}
-          footer="自动检测只决定首次推荐；即使产品位于非标准目录，也可手动选择。选择第三项会替换最早选择的一项。"
-        >
-          {quotaProducts.map((product) => {
-            const selected = settings?.selectedQuotaProductIds.includes(product.provider) ?? false;
-            return (
-              <Row key={product.provider} label={product.displayName}>
-                <div className="flex items-center gap-3">
-                  <span className="max-w-[190px] truncate text-[11px] text-neutral-500">
-                    {quotaProductStatusText(
-                      product,
-                      zCodeStatus,
-                      settings?.zCodeQuotaRegion ?? "bigModel",
-                    )}
-                  </span>
-                  <Toggle
-                    checked={selected}
-                    disabled={quotaBusy}
-                    onChange={(value) => void toggleQuotaProduct(product.provider, value)}
-                  />
-                </div>
-              </Row>
-            );
-          })}
-          <div className="flex justify-end px-3 py-2">
-            <SmallButton disabled={quotaBusy} onClick={() => void rediscoverQuotaProducts()}>
-              <span className="flex items-center gap-1.5">
-                <RefreshCw size={11} /> 重新检测
-              </span>
-            </SmallButton>
-          </div>
-
-          <div className="flex flex-col gap-2.5 px-3 py-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[13px]">ZCode Coding Plan</span>
-                <span className="text-[10.5px] leading-relaxed text-neutral-500">
-                  仅使用你明确提供的区域 Key，不读取 ZCode 登录凭据，也不会向另一区域试发。
+              {syncState.lastSyncAt && (
+                <span className="text-[11px]" style={{ color: "#9E9E9E" }}>
+                  上次同步 {formatRelativeTime(new Date(syncState.lastSyncAt))}
                 </span>
-              </div>
-              <select
-                aria-label="ZCode 账号区域"
-                value={settings?.zCodeQuotaRegion ?? "bigModel"}
-                disabled={!settings || quotaBusy}
-                onChange={(event) => void setZCodeRegion(event.target.value as ZCodeQuotaRegion)}
-                className="rounded bg-[#48484A] px-2 py-1 text-xs text-white outline-none"
-              >
-                <option value="bigModel">BigModel 国内</option>
-                <option value="zAI">Z.ai 海外</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="password"
-                value={zCodeApiKey}
-                disabled={!settings || quotaBusy}
-                autoComplete="off"
-                placeholder={
-                  isZCodeConfigured(
-                    zCodeStatus,
-                    settings?.zCodeQuotaRegion ?? "bigModel",
-                  )
-                    ? "已配置（输入新 Key 可替换）"
-                    : "输入 Coding Plan API Key"
-                }
-                onChange={(event) => setZCodeApiKey(event.target.value)}
-                className="min-w-0 grow rounded-md border border-white/10 bg-[#1C1C1E] px-2.5 py-1.5 font-mono text-xs text-white outline-none focus:border-white/25 disabled:opacity-50"
-              />
-              <SmallButton
-                disabled={!zCodeApiKey.trim() || quotaBusy}
-                onClick={() => void saveZCodeApiKey()}
-              >
-                保存
-              </SmallButton>
-              {isZCodeConfigured(zCodeStatus, settings?.zCodeQuotaRegion ?? "bigModel") && (
-                <button
-                  disabled={quotaBusy}
-                  className="shrink-0 text-xs text-red-400 disabled:opacity-50"
-                  onClick={() => void removeZCodeApiKey()}
-                >
-                  移除
-                </button>
               )}
             </div>
-            {zCodeMessage && <span className="text-[11px] text-emerald-400">{zCodeMessage}</span>}
-          </div>
-          {quotaError && (
-            <div className="px-3 py-2 text-xs text-red-400" style={{ borderColor: "#3A3A3C" }}>
-              {quotaError}
-            </div>
-          )}
+          </Row>
         </Section>
 
-        {/* 托盘 (macOS: 菜单栏) */}
-        <Section title="托盘" footer="完整费用和 Token 用量显示在托盘悬停提示中">
+        {/* 订阅配额 — every product is a plain switch, so the section stays
+            flat; only ZCode (the one product that needs a key) owns a row that
+            opens, and it sits last. */}
+        <Section
+          title={`订阅配额（${settings?.selectedQuotaProductIds.length ?? 0}）`}
+          footer="选中的产品会在面板中各显示一张卡片。"
+        >
+          {quotaProducts
+            .filter((product) => product.provider !== "zcode")
+            .map((product) => (
+              <ProductRow
+                key={product.provider}
+                product={product}
+                statusText={quotaProductStatusText(product)}
+                selected={settings?.selectedQuotaProductIds.includes(product.provider) ?? false}
+                disabled={quotaBusy}
+                onToggle={(value) => void toggleQuotaProduct(product.provider, value)}
+              />
+            ))}
+
+          {zCodeProduct && (
+            <div className="flex flex-col">
+              <div className="flex min-h-[38px] items-center gap-3 px-3 py-1.5">
+                <button
+                  aria-expanded={isZCodeExpanded}
+                  className="flex min-w-0 grow items-center gap-2 text-left"
+                  onClick={() => setZCodeExpanded((value) => !value)}
+                >
+                  <ChevronRight
+                    size={12}
+                    strokeWidth={2.5}
+                    className="shrink-0 transition-transform duration-150"
+                    style={{ color: "#8C8C8C", transform: isZCodeExpanded ? "rotate(90deg)" : undefined }}
+                  />
+                  <ProviderIcon provider="zcode" />
+                  <span className="flex min-w-0 flex-col">
+                    <span className="text-[13px]">{zCodeProduct.displayName}</span>
+                    <span className="truncate text-[10.5px]" style={{ color: "#8C8C8C" }}>
+                      {compactQuotaStatus(
+                        quotaProductStatusText(
+                          zCodeProduct,
+                          zCodeStatus,
+                          settings?.zCodeQuotaRegion ?? "bigModel",
+                        ),
+                      )}
+                    </span>
+                  </span>
+                </button>
+                <Toggle
+                  checked={
+                    settings?.selectedQuotaProductIds.includes("zcode") ?? false
+                  }
+                  disabled={quotaBusy}
+                  onChange={(value) => void toggleQuotaProduct("zcode", value)}
+                />
+              </div>
+
+              {isZCodeExpanded && (
+                <div className="flex flex-col gap-2 px-3 pb-3 pl-[38px]">
+                  <select
+                    aria-label="ZCode 账号区域"
+                    value={settings?.zCodeQuotaRegion ?? "bigModel"}
+                    disabled={!settings || quotaBusy}
+                    onChange={(event) => void setZCodeRegion(event.target.value as ZCodeQuotaRegion)}
+                    className="w-full rounded bg-[#48484A] px-2 py-1 text-xs text-white outline-none disabled:opacity-50"
+                  >
+                    <option value="bigModel">BigModel 国内</option>
+                    <option value="zAI">Z.ai 海外</option>
+                  </select>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={zCodeApiKey}
+                      disabled={!settings || quotaBusy}
+                      autoComplete="off"
+                      placeholder={zCodeConfigured ? "新 Key" : "输入 Coding Plan API Key"}
+                      onChange={(event) => setZCodeApiKey(event.target.value)}
+                      className="min-w-0 grow rounded-md border border-white/10 bg-[#1C1C1E] px-2.5 py-1.5 font-mono text-xs text-white outline-none focus:border-white/25 disabled:opacity-50"
+                    />
+                    <SmallButton
+                      disabled={!zCodeApiKey.trim() || quotaBusy}
+                      onClick={() => void saveZCodeApiKey()}
+                    >
+                      {zCodeConfigured ? "更新" : "保存"}
+                    </SmallButton>
+                    {zCodeConfigured && (
+                      <button
+                        disabled={quotaBusy}
+                        className="shrink-0 text-xs text-red-400 disabled:opacity-50"
+                        onClick={() => void removeZCodeApiKey()}
+                      >
+                        移除
+                      </button>
+                    )}
+                  </div>
+                  <span className="text-[10.5px]" style={{ color: "#8C8C8C" }}>
+                    只使用这里填写的区域 Key，不读取 ZCode 登录凭据。
+                  </span>
+                  {zCodeMessage && <span className="text-[11px] text-emerald-400">{zCodeMessage}</span>}
+                </div>
+              )}
+            </div>
+          )}
+
+          <Disclosure
+            label="数据来源与检测"
+            expanded={isQuotaSourcesExpanded}
+            onToggle={() => setQuotaSourcesExpanded((value) => !value)}
+          >
+            <p className="text-[10.5px] leading-relaxed" style={{ color: "#8C8C8C" }}>
+              检测状态仅用于推荐，所有产品都可手动选择；未选择的产品不会联网读取配额。
+            </p>
+            <p className="text-[10.5px] leading-relaxed" style={{ color: "#8C8C8C" }}>
+              Grok 仅从官方 CLI 普通日志读取结构化订阅配额；Cursor 可单独选择并等待官方配额接口，不读取
+              Cookie、登录 Token 或其他应用凭据。
+            </p>
+            <p className="text-[10.5px] leading-relaxed" style={{ color: "#8C8C8C" }}>
+              Kimi Code 使用其官方 CLI 登录。
+            </p>
+            <div className="flex justify-end">
+              <SmallButton disabled={quotaBusy} onClick={() => void rediscoverQuotaProducts()}>
+                <span className="flex items-center gap-1.5">
+                  <RefreshCw size={11} /> 重新检测
+                </span>
+              </SmallButton>
+            </div>
+          </Disclosure>
+
+          {quotaError && <div className="px-3 py-2 text-xs text-red-400">{quotaError}</div>}
+        </Section>
+
+        {/* 常规 — tray and startup preferences cover the same subject: how the
+            app behaves outside this window. */}
+        <Section title="常规">
           <Row label="托盘显示费用">
             <Toggle
               checked={settings?.showCostInTray ?? true}
@@ -500,20 +512,61 @@ export function SettingsApp() {
               onChange={(v) => patchSettings({ showTokensInTray: v })}
             />
           </Row>
-        </Section>
-
-        {/* 通用 */}
-        <Section title="通用">
           <Row label="开机自启动">
             <Toggle checked={autoStart} onChange={toggleAutoStart} />
           </Row>
         </Section>
 
-        {status?.testDiagnosticsAvailable && (
-          <Section
-            title="测试诊断"
-            footer="仅测试构建可用；只包含脱敏错误码、Provider、版本和系统架构，不包含路径、账号、Key、Token、Cookie 或响应正文。"
+        {/* 数据目录（高级）— extra scan directories are a set-once concern, so
+            they collapse into a row that still shows its state. */}
+        <Section title="数据目录（高级）">
+          <Disclosure
+            label="隔离运行时目录"
+            summary={isolatedRootsSummary}
+            expanded={isIsolatedRootsExpanded}
+            onToggle={() => setIsIsolatedRootsExpanded((value) => !value)}
           >
+            {([
+              ["codex", "Codex"],
+              ["grok", "Grok"],
+              ["antigravity", "Antigravity / AGY"],
+            ] as const).map(([source, label]) => (
+              <div key={source} className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span>{label}</span>
+                  <SmallButton disabled={extraRootsBusy} onClick={() => void addExtraRoot(source)}>
+                    添加目录…
+                  </SmallButton>
+                </div>
+                {(extraRoots[source] ?? []).map((path) => (
+                  <div key={path} className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[11px]"
+                      style={{ color: "#8C8C8C" }}
+                      title={path}
+                    >
+                      {path}
+                    </span>
+                    <button
+                      className="shrink-0 text-xs text-red-400 disabled:opacity-50"
+                      disabled={extraRootsBusy}
+                      onClick={() => void removeExtraRoot(source, path)}
+                    >
+                      移除
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ))}
+            <p className="text-[10.5px] leading-relaxed" style={{ color: "#8C8C8C" }}>
+              可为每种工具添加多个 Multica 或其他隔离目录；默认目录仍会照常统计。
+            </p>
+            {extraRootsError && <span className="text-xs text-red-400">{extraRootsError}</span>}
+          </Disclosure>
+        </Section>
+
+        {status?.testDiagnosticsAvailable && (
+          <Section title="测试诊断" footer="仅测试构建可用；只含脱敏错误码、Provider、版本与系统信息，不含路径、账号、Key。">
             <Row label="外测日志">
               <div className="flex items-center gap-2">
                 {diagnosticMessage && (
@@ -550,8 +603,8 @@ export function SettingsApp() {
           </Row>
         </Section>
 
-        {/* Danger zone */}
-        <Section>
+        {/* 危险操作 */}
+        <Section title="危险操作">
           {!showResetConfirm ? (
             <Row label="">
               <button className="text-[13px] text-red-400" onClick={() => setShowResetConfirm(true)}>
@@ -607,6 +660,78 @@ function Section({
           {footer}
         </span>
       )}
+    </div>
+  );
+}
+
+/** One product switch: official icon, display name, and the discovery/read
+ *  status line the panel's selector prints in full. */
+function ProductRow({
+  product,
+  statusText,
+  selected,
+  disabled,
+  onToggle,
+}: {
+  product: QuotaProduct;
+  statusText: string;
+  selected: boolean;
+  disabled: boolean;
+  onToggle: (selected: boolean) => void;
+}) {
+  return (
+    <div className="flex min-h-[38px] items-center justify-between gap-3 px-3 py-1.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <ProviderIcon provider={product.provider} />
+        <span className="flex min-w-0 flex-col">
+          <span className="text-[13px]">{product.displayName}</span>
+          <span className="truncate text-[10.5px]" style={{ color: "#8C8C8C" }}>
+            {statusText}
+          </span>
+        </span>
+      </div>
+      <Toggle checked={selected} disabled={disabled} onChange={onToggle} />
+    </div>
+  );
+}
+
+/** Collapsed row that still shows its state, so a set-once setting costs one
+ *  line instead of a screen. */
+function Disclosure({
+  label,
+  summary,
+  expanded,
+  onToggle,
+  children,
+}: {
+  label: string;
+  summary?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col">
+      <button
+        aria-expanded={expanded}
+        className="flex min-h-[38px] w-full items-center gap-2 px-3 py-1.5 text-left"
+        onClick={onToggle}
+      >
+        <ChevronRight
+          size={12}
+          strokeWidth={2.5}
+          className="shrink-0 transition-transform duration-150"
+          style={{ color: "#8C8C8C", transform: expanded ? "rotate(90deg)" : undefined }}
+        />
+        <span className="shrink-0 text-[13px]">{label}</span>
+        <span className="grow" />
+        {summary && (
+          <span className="min-w-0 truncate text-[11px]" style={{ color: "#8C8C8C" }} title={summary}>
+            {summary}
+          </span>
+        )}
+      </button>
+      {expanded && <div className="flex flex-col gap-2.5 px-3 pb-3 pl-[38px]">{children}</div>}
     </div>
   );
 }

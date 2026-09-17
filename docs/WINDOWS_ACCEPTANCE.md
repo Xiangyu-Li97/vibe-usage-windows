@@ -68,6 +68,21 @@ Windows. Read package.json for the app version and the pinned CLI version;
   Scan installed EXE payloads, not only compressed setup files; preserve failures.
 - QUOTA-SELECTOR-01: display discovery separately from a matching quota result;
   never equate an unread product with no-data, or use another provider's snapshot.
+- QUOTA-PRESENTATION-01: every enabled product always renders its own card, in
+  selection order, in one horizontally scrolling row; the section never folds
+  into a generic line, and a third selection never evicts the first. Empty copy
+  is graded by source and never guesses: refresh in flight, the live Codex
+  endpoint's own `allowed:false` / `limit_reached:true` verdict, the same
+  endpoint answering without a window, local detection with nothing read yet,
+  and no local install/login. Verify on Windows that a product whose source
+  cannot tell "used up" apart from "nothing here" never shows 「已用满」, and that
+  four or more enabled products scroll instead of shrinking below 240px.
+- PARITY-UI-01: official provider artwork (six products, transparent container
+  marks) instead of the previous mismatched replacements, and the settings order
+  数据同步 → 订阅配额 → 常规 → 数据目录（高级）→ 测试诊断 → 关于 → 危险操作 with the
+  set-once directory controls collapsed and ZCode's key form inside its own
+  row. Capture cropped screenshots of the panel and the settings window on
+  Windows; browser rendering on macOS is not native evidence.
 
 ## Commands and evidence
 

@@ -4,7 +4,9 @@ use reqwest::{Client, StatusCode, Url};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use vibe_core::{ProviderRateLimit, RateLimitProvider, RateLimitStatus, RateLimitWindow};
+use vibe_core::{
+    ProviderRateLimit, RateLimitEmptyReason, RateLimitProvider, RateLimitStatus, RateLimitWindow,
+};
 
 const DEFAULT_BASE: &str = "https://chatgpt.com/backend-api";
 const MAX_ATTEMPTS: usize = 3;
@@ -160,7 +162,19 @@ fn number(value: Option<&Value>) -> Option<f64> {
 }
 
 fn parse_usage_response(root: &Value, now: f64) -> Option<ProviderRateLimit> {
-    let limits = root.get("rate_limit")?.as_object()?;
+    // `rate_limit` is nullable on the wire. An explicit null is the endpoint
+    // saying "this account currently has no rate-limit window" (quota for the
+    // period is consumed, or nothing is configured) — a successful read we can
+    // explain on the card. A *missing* key is a response shape we don't
+    // recognize and stays unparseable so the caller falls back instead of
+    // reporting an empty account.
+    let limits = match root.get("rate_limit") {
+        None => return None,
+        Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => return None,
+    };
+    let limits = &limits;
     let mut five_hour = None;
     let mut seven_day = None;
     for slot in ["primary_window", "secondary_window"] {
@@ -191,11 +205,21 @@ fn parse_usage_response(root: &Value, now: f64) -> Option<ProviderRateLimit> {
             five_hour = Some(window);
         }
     }
-    let status = if five_hour.is_none() && seven_day.is_none() {
+    let no_window = five_hour.is_none() && seven_day.is_none();
+    let status = if no_window {
         RateLimitStatus::NoData
     } else {
         RateLimitStatus::Ok
     };
+    // The endpoint reports enforced windows exhaustively, so an answer without
+    // any window is a fact it can name; every other source stays neutral.
+    let empty_reason = no_window.then(|| {
+        if reports_limit_reached(limits) {
+            RateLimitEmptyReason::LimitReached
+        } else {
+            RateLimitEmptyReason::NoWindow
+        }
+    });
     let plan_label = root
         .get("plan_type")
         .and_then(Value::as_str)
@@ -215,8 +239,23 @@ fn parse_usage_response(root: &Value, now: f64) -> Option<ProviderRateLimit> {
         data_as_of: Some(now),
         fetched_at: Some(now),
         reset_credits_count,
+        empty_reason,
         status,
     })
+}
+
+/// The endpoint's own verdict on whether quota is currently consumable:
+/// `limit_reached` when present, else the inverse of the older `allowed` flag.
+/// Neither field present means "not claimed", never a guess — a confident but
+/// wrong 「已用满」 is worse than no verdict at all.
+fn reports_limit_reached(limits: &serde_json::Map<String, Value>) -> bool {
+    if let Some(reached) = limits.get("limit_reached").and_then(Value::as_bool) {
+        return reached;
+    }
+    if let Some(allowed) = limits.get("allowed").and_then(Value::as_bool) {
+        return !allowed;
+    }
+    false
 }
 
 fn capitalize(raw: &str) -> String {
@@ -271,6 +310,54 @@ mod tests {
     #[test]
     fn malformed_non_null_window_rejects_payload() {
         let value = json!({"rate_limit":{"primary_window":{"used_percent":12}}});
+        assert!(parse_usage_response(&value, 1000.0).is_none());
+    }
+
+    #[test]
+    fn empty_answer_carries_the_endpoints_own_reason() {
+        let reached = json!({"rate_limit":{"allowed":false,"limit_reached":true}});
+        assert_eq!(
+            parse_usage_response(&reached, 1000.0).unwrap().empty_reason,
+            Some(RateLimitEmptyReason::LimitReached)
+        );
+        let exhausted = json!({"rate_limit":{"allowed":false}});
+        assert_eq!(
+            parse_usage_response(&exhausted, 1000.0).unwrap().empty_reason,
+            Some(RateLimitEmptyReason::LimitReached)
+        );
+        let quiet = json!({"rate_limit":null});
+        let snapshot = parse_usage_response(&quiet, 1000.0).unwrap();
+        assert_eq!(snapshot.status, RateLimitStatus::NoData);
+        assert_eq!(snapshot.empty_reason, Some(RateLimitEmptyReason::NoWindow));
+    }
+
+    #[test]
+    fn empty_answer_without_a_verdict_only_claims_there_is_no_window() {
+        // Neither field present means "not claimed": the card may report that
+        // no window is in effect, never that the quota is used up.
+        let value = json!({"rate_limit":{}});
+        assert_eq!(
+            parse_usage_response(&value, 1000.0).unwrap().empty_reason,
+            Some(RateLimitEmptyReason::NoWindow)
+        );
+        let allowed = json!({"rate_limit":{"allowed":true}});
+        let snapshot = parse_usage_response(&allowed, 1000.0).unwrap();
+        assert_eq!(snapshot.status, RateLimitStatus::NoData);
+        assert_eq!(snapshot.empty_reason, Some(RateLimitEmptyReason::NoWindow));
+    }
+
+    #[test]
+    fn a_live_window_never_carries_an_empty_reason() {
+        let value = json!({"rate_limit":{"allowed":false,"limit_reached":true,
+            "primary_window":{"used_percent":12,"limit_window_seconds":604800}}});
+        let snapshot = parse_usage_response(&value, 1000.0).unwrap();
+        assert_eq!(snapshot.status, RateLimitStatus::Ok);
+        assert_eq!(snapshot.empty_reason, None);
+    }
+
+    #[test]
+    fn a_missing_rate_limit_key_is_not_an_explained_empty_answer() {
+        let value = json!({"plan_type":"pro"});
         assert!(parse_usage_response(&value, 1000.0).is_none());
     }
 }

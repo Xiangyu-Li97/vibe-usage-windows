@@ -36,7 +36,8 @@ import {
 import { localDayKey } from "../lib/formatters";
 import { invoke } from "@tauri-apps/api/core";
 
-interface AppStateValue {
+/** The dashboard/quota state every component reads through `useAppState`. */
+export interface AppStateValue {
   status: AppStatus | null;
   settings: AppSettings;
   configured: boolean;

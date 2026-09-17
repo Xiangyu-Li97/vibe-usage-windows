@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  compactQuotaStatus,
   isZCodeConfigured,
+  quotaEmptyStateText,
   quotaProductStatusText,
-  visibleQuotaProviders,
 } from "../src/lib/quotaProducts";
 import { ProviderRateLimit, QuotaProduct } from "../src/lib/types";
 
@@ -37,28 +38,6 @@ describe("quota product presentation", () => {
     expect(quotaProductStatusText({ ...grok, provider: "cursor", availability: "pendingProtocol" }, undefined, "bigModel", { provider: "cursor", status: { kind: "disabled" } })).toBe("已检测 · 待接入");
   });
 
-  it("keeps an explicitly selected Cursor visible while its protocol is pending", () => {
-    expect(visibleQuotaProviders(["cursor"], [], false)).toEqual(["cursor"]);
-  });
-
-  it("keeps both selected slots in their persisted order once one is actionable", () => {
-    const snapshots: ProviderRateLimit[] = [
-      { provider: "grok", status: { kind: "retryableError" } },
-    ];
-    expect(visibleQuotaProviders(["kimi-code", "grok"], snapshots, false)).toEqual([
-      "kimi-code",
-      "grok",
-    ]);
-  });
-
-  it("collapses selected products when every result is ordinary no-data", () => {
-    const snapshots: ProviderRateLimit[] = [
-      { provider: "kimi-code", status: { kind: "noData" } },
-      { provider: "grok", status: { kind: "noData" } },
-    ];
-    expect(visibleQuotaProviders(["kimi-code", "grok"], snapshots, false)).toEqual([]);
-  });
-
   it("describes discovery separately from protocol readiness", () => {
     const pending: QuotaProduct = {
       provider: "cursor",
@@ -73,5 +52,49 @@ describe("quota product presentation", () => {
     const status = { bigModelConfigured: true, zAiConfigured: false };
     expect(isZCodeConfigured(status, "bigModel")).toBe(true);
     expect(isZCodeConfigured(status, "zAI")).toBe(false);
+  });
+
+  it("shortens a settings row to the one fact it can act on", () => {
+    expect(compactQuotaStatus("未检测到 · API Key 已配置 · 未读取")).toBe("已配置");
+    expect(compactQuotaStatus("已检测 · 需配置 API Key")).toBe("待配置");
+    expect(compactQuotaStatus("未检测到 · 需配置 API Key")).toBe("待配置");
+    expect(compactQuotaStatus("已检测 · 待接入")).toBe("已检测 · 待接入");
+  });
+});
+
+describe("empty quota card copy", () => {
+  const noData = (extra: Partial<ProviderRateLimit>): ProviderRateLimit => ({
+    provider: "codex",
+    status: { kind: "noData" },
+    ...extra,
+  });
+
+  it("says a refresh is in flight instead of reporting a verdict", () => {
+    expect(quotaEmptyStateText(noData({ emptyReason: "limitReached" }), false, true)).toBe(
+      "正在读取订阅配额…",
+    );
+  });
+
+  it("repeats the live source's own verdict when it reported one", () => {
+    expect(quotaEmptyStateText(noData({ emptyReason: "limitReached" }), true)).toBe(
+      "本期订阅配额已用满 · 等待额度重置",
+    );
+    expect(quotaEmptyStateText(noData({ emptyReason: "noWindow" }), true)).toBe(
+      "当前没有生效的额度窗口",
+    );
+  });
+
+  it("never borrows 「已用满」 for a source that cannot tell", () => {
+    for (const snapshot of [noData({}), noData({ emptyReason: null })]) {
+      expect(quotaEmptyStateText(snapshot, true)).toBe("暂未读取到订阅配额数据");
+      expect(quotaEmptyStateText(snapshot, false)).toBe("未检测到本机安装或登录");
+      expect(quotaEmptyStateText(snapshot, true)).not.toContain("已用满");
+    }
+  });
+
+  it("separates a detected product from one that is not installed", () => {
+    const product: ProviderRateLimit = { provider: "grok", status: { kind: "noData" } };
+    expect(quotaEmptyStateText(product, true)).toBe("暂未读取到订阅配额数据");
+    expect(quotaEmptyStateText(product, false)).toBe("未检测到本机安装或登录");
   });
 });
