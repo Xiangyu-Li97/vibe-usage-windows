@@ -59,6 +59,7 @@ pub fn read_from(capture_file: &Path, enabled: bool, now: f64) -> ProviderRateLi
 
     ProviderRateLimit {
         provider: RateLimitProvider::ClaudeCode,
+        meters: Vec::new(),
         five_hour,
         seven_day,
         // Can't distinguish Pro vs Max from this payload — leave nil.
@@ -67,6 +68,7 @@ pub fn read_from(capture_file: &Path, enabled: bool, now: f64) -> ProviderRateLi
             .get("captured_at")
             .and_then(Value::as_str)
             .and_then(parse_iso8601_epoch),
+        fetched_at: None,
         five_hour_not_enforced: false,
         reset_credits_count: None,
         status: RateLimitStatus::Ok,

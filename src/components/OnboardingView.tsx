@@ -68,21 +68,13 @@ export function OnboardingView() {
   };
 
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 px-4 pb-2 pt-3">
-        <span className="text-[15px] font-bold text-white">Vibe Usage</span>
-        {state.status?.isDev && (
-          <span
-            className="rounded-[3px] px-1 py-px font-mono text-[10px] font-bold text-orange-400"
-            style={{ background: "rgba(251,146,60,0.15)" }}
-          >
-            DEBUG
-          </span>
-        )}
+    <div className="flex flex-col gap-3 rounded-card border border-card-border bg-card p-3">
+      <div className="flex flex-col gap-1">
+        <span className="text-[13px] font-semibold text-white">用量统计（可选）</span>
+        <span className="text-[11px] leading-relaxed text-t-muted">
+          登录 Vibe Usage 后可同步 Token 与查看统计；不影响上方订阅配额。
+        </span>
       </div>
-      <div className="h-px bg-card-border" />
-
-      <div className="flex flex-col gap-4 p-4">
         {pendingUserCode && (
           <>
             <div
@@ -124,7 +116,6 @@ export function OnboardingView() {
             取消，重新开始
           </button>
         )}
-      </div>
     </div>
   );
 }

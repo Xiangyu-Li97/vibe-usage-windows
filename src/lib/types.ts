@@ -169,25 +169,62 @@ export interface RateLimitWindow {
   windowDuration?: number | null;
 }
 
-export type RateLimitProvider = "codex" | "claudeCode";
+export type RateLimitProvider =
+  | "codex"
+  | "claudeCode"
+  | "kimi-code"
+  | "zcode"
+  | "grok"
+  | "cursor";
+
+export interface RateLimitMeter {
+  id: string;
+  label: string;
+  /** 0-100 */
+  utilization: number;
+  /** epoch seconds */
+  resetsAt?: number | null;
+  /** seconds; enables the elapsed-time bar */
+  windowDuration?: number | null;
+}
 
 export type RateLimitStatus =
   | { kind: "ok" }
   | { kind: "noData" }
   | { kind: "disabled" }
   | { kind: "unauthorized" }
+  | { kind: "retryableError" }
   | { kind: "error"; message: string };
 
 export interface ProviderRateLimit {
   provider: RateLimitProvider;
+  meters?: RateLimitMeter[];
   fiveHour?: RateLimitWindow | null;
   sevenDay?: RateLimitWindow | null;
   planLabel?: string | null;
   /** Epoch seconds when the provider produced the numbers. */
   dataAsOf?: number | null;
+  /** Epoch seconds when Vibe Usage fetched the snapshot. */
+  fetchedAt?: number | null;
   fiveHourNotEnforced?: boolean;
   resetCreditsCount?: number | null;
   status: RateLimitStatus;
+}
+
+export type QuotaProductAvailability = "ready" | "pendingProtocol";
+
+export interface QuotaProduct {
+  provider: RateLimitProvider;
+  displayName: string;
+  availability: QuotaProductAvailability;
+  isDetected: boolean;
+}
+
+export type ZCodeQuotaRegion = "bigModel" | "zAI";
+
+export interface ZCodeCredentialStatus {
+  bigModelConfigured: boolean;
+  zAiConfigured: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +246,8 @@ export interface AppStatus {
   version: string;
   isDev: boolean;
   runtimeAvailable: boolean;
+  testDiagnosticsAvailable: boolean;
+  updatesAvailable: boolean;
   apiKeyDisplay?: string | null;
 }
 
@@ -218,6 +257,9 @@ export interface AppSettings {
   showTokensInTray: boolean;
   codexRateLimitEnabled: boolean;
   claudeRateLimitEnabled: boolean;
+  selectedQuotaProductIds: RateLimitProvider[];
+  quotaSelectionInitialized: boolean;
+  zCodeQuotaRegion: ZCodeQuotaRegion;
 }
 
 export type ExtraRoots = Partial<Record<"codex" | "grok" | "antigravity", string[]>>;

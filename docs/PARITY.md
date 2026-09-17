@@ -44,11 +44,12 @@
 | `SyncEngine`（npx/bun x，120s） | `services/sync_engine.rs`（内置 CLI + node，120s，CREATE_NO_WINDOW） |
 | 设置中的隔离运行时目录（Codex / Grok / Antigravity） | 原生文件夹选择器 + 同一组 CLI `config roots/add-root/remove-root` 命令 |
 | `SyncScheduler`（30 分钟） | `services/scheduler.rs` |
-| Codex / Claude 实时订阅配额与安全回退 | Codex 官方接口优先 + JSONL 回退；Claude 受限 stdio 探测 + 账户校验缓存；启动时安全退休旧状态栏 hook |
+| 六产品订阅配额目录与两项选择 | Codex / Claude 原生适配；Kimi / ZCode / Grok 使用版本化 typed CLI bridge；Cursor 独立显示待接入 |
+| ZCode 两区域 Key | BigModel / Z.ai 分开存入 Windows Credential Manager；只向明确选择的区域请求注入 |
 | `RuntimeDetector` | `crates/core/runtime.rs`（Windows 路径 + 捆绑 node 兜底） |
 | `CodexRateLimitReader` | `crates/core/rate_limit/codex.rs` |
 | `ClaudeRateLimitReader` | `crates/core/rate_limit/claude.rs` |
-| `StatuslineHook`（bash 包装器） | `crates/core/statusline_hook.rs`（**Node 包装器**，Windows 无 bash） |
+| 旧 `StatuslineHook` | `crates/core/statusline_hook.rs` 仅用于安全退休本应用可证明归属的旧 hook |
 | `MenuBarController`（NSStatusItem + NSPanel） | `tray.rs` + `panel.rs`（托盘 + 标准主窗口） |
 | Sparkle | `services/updater.rs`（latest.json + SHA-256 + NSIS） |
 | `SMAppService`（登录项） | `auto-launch` crate（HKCU Run 注册表键） |
@@ -58,7 +59,7 @@
 1. **托盘文本**：macOS 菜单栏支持图标旁文字；Windows 托盘不支持。Windows 始终使用高对比 32×32 图标，开启「显示费用/Token」时完整数值显示在托盘悬停提示中，避免小尺寸任务栏图标变得不可读。
 2. **「在 Dock 中显示」**：Windows 无 Dock，省略此设置项。托盘右键菜单提供「打开面板/立即同步/设置/退出」（Windows 惯例，macOS 无右键菜单，属增强）。
 3. **运行时**：macOS 版要求用户自装 Node/Bun 并用 `npx --yes` 每次联网解析；Windows 版捆绑打过补丁的 CLI 与 Node 22 运行时，离线可同步、版本可控（检测顺序：捆绑 node → 系统 node ≥22.5 → 系统 node ≥20 → bun）。
-4. **statusline 包装器**：bash → Node 脚本（行为逐行对齐：rate_limits 摘取、原子写、原命令同 stdin 转发、备份/自愈/还原）。
+4. **Claude 配额**：使用受限的只读官方 CLI 探测，不安装 statusline；启动时只退休旧版本可证明归属的包装器。
 5. **自更新**：Sparkle → 自研（GitHub Releases latest.json、SHA-256 校验、启动 NSIS 安装器）。UI 入口一致（footer「发现更新」+ 设置「检查更新」）。
 6. **面板关闭按钮**：macOS footer「关闭」= 退出应用（`NSApplication.terminate`）；Windows 同义（退出到无进程）。托盘常驻由开机自启保证。
 7. **配额悬停 tooltip**：交互与内容 1:1；Windows 使用 mouse enter/leave（无 NSTrackingArea 差异）。
@@ -81,10 +82,7 @@
 |---|---|
 | `%USERPROFILE%\.vibe-usage\config.json` | `apiKey` / `apiUrl` / `hostname`（camelCase，与 CLI 互写） |
 | `%USERPROFILE%\.vibe-usage\state.json` | CLI 增量同步状态；「重置配置」时一并删除（修复 macOS/CLI 的 reset 不清 state 问题） |
-| `%USERPROFILE%\.vibe-usage\claude-rate-limits.json` | statusline 包装器写入的配额快照 |
-| `%USERPROFILE%\.vibe-usage\vibe-usage-statusline.js` | Node 包装器（macOS 为 .sh） |
-| `%USERPROFILE%\.vibe-usage\statusline-original` / `settings.json.vibe-bak` | 原命令 sidecar / Claude 设置备份 |
-| `%USERPROFILE%\.claude\settings.json` | statusline hook 安装点（尊重 `CLAUDE_CONFIG_DIR`） |
+| `%USERPROFILE%\.vibe-usage\claude-rate-limits.json` | 旧版本缓存，仅作安全回退；新版本不安装 statusline |
 | `%USERPROFILE%\.codex\sessions\` | Codex 配额读取（只读） |
 | `%APPDATA%\ai.vibecafe.vibe-usage.windows\settings.json` | 应用设置（对应 macOS UserDefaults） |
 

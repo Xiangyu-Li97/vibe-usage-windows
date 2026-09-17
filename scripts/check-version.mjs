@@ -22,6 +22,7 @@ const expectedCli = packageJson.vibeUsageCliVersion;
 const tauri = JSON.parse(read("src-tauri/tauri.conf.json")).version;
 const cargo = /\[workspace\.package\][^[]*?version\s*=\s*"([^"]+)"/s.exec(read("Cargo.toml"))?.[1];
 const vendoredCli = JSON.parse(read("src-tauri/resources/cli/package.json")).version;
+const vendoredSource = JSON.parse(read("src-tauri/resources/cli/.vibe-usage-source.json"));
 
 console.log(`package.json:     ${pkg}`);
 console.log(`tauri.conf.json:  ${tauri}`);
@@ -29,6 +30,7 @@ console.log(`Cargo.toml:       ${cargo}`);
 console.log(`CLI channel:      ${cliChannel}`);
 console.log(`Expected CLI:     ${expectedCli}`);
 console.log(`Vendored CLI:     ${vendoredCli}`);
+console.log(`CLI source:       ${vendoredSource.source}${vendoredSource.commit ? ` ${vendoredSource.commit}` : ""}`);
 
 if (pkg !== tauri || pkg !== cargo) {
   console.error("✗ version mismatch — update all three before releasing");
@@ -44,6 +46,10 @@ if (vendoredCli !== expectedCli) {
 }
 if (!/^\d+\.\d+\.\d+(?:[-+].+)?$/.test(vendoredCli)) {
   console.error("✗ vendored CLI must contain a concrete semantic version");
+  process.exit(1);
+}
+if (vendoredSource.version !== vendoredCli) {
+  console.error("✗ vendored CLI source metadata disagrees with the snapshot — re-run scripts/vendor-cli.mjs");
   process.exit(1);
 }
 console.log("✓ app versions and pinned vendored CLI are consistent");

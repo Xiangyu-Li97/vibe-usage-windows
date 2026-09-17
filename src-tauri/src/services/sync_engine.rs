@@ -34,7 +34,7 @@ fn probe_node_version(path: &std::path::Path) -> Option<(u32, u32, u32)> {
     let mut cmd = std::process::Command::new(path);
     cmd.arg("-v").stdout(Stdio::piped()).stderr(Stdio::null()).stdin(Stdio::null());
     process_utils::hide_command_window(&mut cmd);
-    let out = cmd.output().ok()?;
+    let out = crate::process_lifecycle::output_sync(&mut cmd).ok()?;
     runtime::parse_node_version(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -94,10 +94,20 @@ fn cli_command(app: &AppHandle, args: &[&str]) -> Result<tokio::process::Command
     Ok(cmd)
 }
 
+/// Build a command for the typed quota bridge. Arguments are owned by the
+/// caller but copied into Command before this function returns.
+pub(super) fn quota_command(
+    app: &AppHandle,
+    args: &[String],
+) -> Result<tokio::process::Command, String> {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    cli_command(app, &borrowed)
+}
+
 /// Run a short config command against the same bundled CLI and config directory
 /// used by sync.
 pub async fn run_config_command(app: &AppHandle, args: &[&str]) -> Result<String, String> {
-    let output = tokio::time::timeout(Duration::from_secs(30), cli_command(app, args)?.output())
+    let output = tokio::time::timeout(Duration::from_secs(30), crate::process_lifecycle::output(&mut cli_command(app, args)?))
         .await
         .map_err(|_| "CLI 配置操作超时".to_string())?
         .map_err(|e| format!("CLI 配置操作失败: {e}"))?;
@@ -228,7 +238,8 @@ async fn run_sync_once(app: AppHandle) {
 async fn run_cli_sync(app: &AppHandle) -> Result<String, String> {
     let mut cmd = cli_command(app, &["sync"]).map_err(|e| format!("同步失败: {e}"))?;
 
-    let mut child = cmd.spawn().map_err(|e| format!("同步失败: {e}"))?;
+    let (mut child, _process_guard) = crate::process_lifecycle::spawn(&mut cmd)
+        .map_err(|e| format!("同步失败: {e}"))?;
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 

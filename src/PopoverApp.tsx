@@ -16,7 +16,29 @@ export function PopoverApp() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-app">
-      {!state.configured ? <OnboardingView /> : <DashboardView />}
+      {state.configured ? <DashboardView /> : <LocalQuotaView />}
+    </div>
+  );
+}
+
+function LocalQuotaView() {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="px-4 pb-2 pt-3">
+        <HeaderBar />
+      </div>
+      <div className="h-px shrink-0 bg-card-border" />
+      <div className="no-scrollbar grow overflow-y-auto p-4">
+        <div className="flex flex-col gap-4">
+          <RateLimitCards />
+          <div className="h-px bg-card-border" />
+          <OnboardingView />
+        </div>
+      </div>
+      <div className="h-px shrink-0 bg-card-border" />
+      <div className="px-4 py-2">
+        <FooterBar />
+      </div>
     </div>
   );
 }

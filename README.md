@@ -10,7 +10,9 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 
 ## 配置
 
-1. 打开 Vibe Usage，点击「登录并链接数据」
+本机订阅配额无需 Vibe Usage 账号即可使用。若还需要跨设备 Token/费用统计：
+
+1. 打开 Vibe Usage，在订阅配额下方点击「登录并链接数据」
 2. 浏览器自动打开 vibecafe.ai 审批页面 — 登录后确认验证码与 app 一致
 3. 点击「确认链接」 — app 自动拿到 Key 并开始同步
 
@@ -21,14 +23,25 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 - 系统托盘常驻，点击托盘图标打开用量面板
 - 后台每 30 分钟自动同步数据，也可手动「更新数据」
 - 弹出窗口查看费用、总 Token、缓存 Token、趋势图表
-- **订阅配额监控**：可分别显示 Codex / Claude Code 的 5 小时 / 7 天 token 配额，悬停查看消耗 vs 时间对比
+- **订阅配额监控**：自动检测 Codex、Claude Code、Kimi Code、ZCode、Grok 与 Cursor，并允许最多选择两个显示；Cursor 当前明确标记为待接入
+- Codex / Claude 使用只读原生适配；Kimi Code 使用官方 CLI 登录；Grok 只读官方 CLI 的结构化配额日志；ZCode 使用用户明确提供的 BigModel（国内）或 Z.ai（海外）Coding Plan Key
+- ZCode Key 只保存在当前 Windows 用户的 Credential Manager 中，不写入设置文件、不回显，也不会跨区域试发
 - 支持今天 / 24H / 7D / 30D / 90D / 自定义日期，以及终端 / 工具 / 模型 / 项目筛选
 - 可在托盘图标显示今日费用和 Token 数
 - 内置 [@vibe-cafe/vibe-usage](https://github.com/vibe-cafe/vibe-usage) CLI 与 Node 运行时，开箱即用，无需安装 Node.js
 - 可在设置中为 Codex、Grok、Antigravity / AGY 添加多个 Multica 或其他隔离运行时目录；各工具默认目录仍会继续扫描
 - 订阅配额读取对齐 macOS：Codex 优先读取实时官方用量、离线回退会话日志；Claude 使用无工具、无提示、无会话持久化的只读探测，不修改 Claude 状态栏配置
 - 内置 CLI 是仓库中已审查并固定的快照（版本见 `package.json` 的 `vibeUsageCliVersion`）；发布构建直接打包该快照，不会在构建期从 npm 解析或下载新的 Vibe Usage CLI，用户机器也不会在运行时拉取或执行未随安装包验证的新代码。npm `latest` 仅在维护者显式执行 `node scripts/vendor-cli.mjs` 更新快照时用于选择候选 CLI 版本
+- workflow_dispatch 生成的外测包可导出严格脱敏的配额诊断；正式 tag Release 不编译诊断实现，设置入口也不会显示
 - 支持开机自启动、单实例、应用内检查更新
+
+需要 pnpm 10.8 或更新的 10.x。仓库 `.pnpmfile.cjs` 在 Windows 将 virtual store 放到 `%LOCALAPPDATA%/vbu-pnpm-vstore/<checkout-path-hash>`；按规范化 checkout 路径隔离，而不是只按版本号隔离。其他平台保留 pnpm 默认目录。用户显式 `virtual-store-dir` 配置优先；不要让独立 checkout 显式共用同一目录。修改 hook 后应同步更新锁文件中的 pnpmfileChecksum，保留原锁定依赖。
+
+Release 构建入口在编译阶段重映射用户目录、Cargo/Rustup 自定义目录和源码路径，并恢复调用者的 Rust flags。必须扫描安装后的程序确认无私有构建路径，不能只扫描压缩安装器。额外回归：`node --test scripts/test-pnpm-store.cjs`、`powershell -NoProfile -File scripts/test-windows-rust-paths.ps1`（也用 PowerShell 7 执行）。
+
+Windows 开发时通过 `scripts/cargo-windows.ps1` 执行 Cargo 子命令；原生 `cargo test` 不会自动调用本项目脚本，在长路径下仍可能触发 MSVC LNK1104。
+
+长路径源码目录构建时，脚本自动把 Cargo 输出放到 `%LOCALAPPDATA%\vbu-t\<工作区哈希>`；源码和 Vite 工作目录保持原路径。显式设置的 `CARGO_TARGET_DIR` 优先，安装包和签名验证都使用实际输出目录。Windows 修复基线及尚未完成的验收见 [任务单](docs/WINDOWS_ACCEPTANCE.md)。
 
 ## 系统要求
 
@@ -37,15 +50,22 @@ Windows 应用，自动追踪 AI 编程工具的 Token 用量和费用。App 常
 
 ## 从源码构建
 
+本地外测最简单的方式：解压源码包后双击 `BUILD-WINDOWS-EXTERNAL-TEST.cmd`。首次运行可能通过 winget 安装 Node 22、Rust 1.88、Visual C++ Build Tools 与 Windows SDK；完成后安装包会出现在源码包根目录。外测包使用独立的 “Vibe Usage Test” 应用身份，不会覆盖已安装的正式版。
+
+外测包不启动正式版更新轮询，设置中明确显示不检查更新，后端也拒绝检查和安装更新命令。外测身份不等于账户数据全部隔离：Release 外测仍使用现有 Vibe Usage 账号配置和正式 ZCode 凭据目标，测试前请保留现有状态。完整任务单见 [Windows 原生验收](docs/WINDOWS_ACCEPTANCE.md)。
+
+也可以手动运行：
+
 ```powershell
 git clone https://github.com/vibe-cafe/vibe-usage-windows.git
 cd vibe-usage-windows
 
 # 首次：安装工具链 (Node 22 / Rust 1.88 / VS Build Tools)
-pwsh -File scripts/setup-windows-build-env.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-build-env.ps1
 
 pnpm install
 pnpm run release:windows       # 产出 VibeUsage-<version>-Windows-Setup.exe + latest.json
+pnpm run release:windows:test  # 产出带脱敏诊断的本地外测安装包，不生成发布清单
 ```
 
 代码签名构建可通过环境变量提供证书：
@@ -57,7 +77,7 @@ pnpm run release:windows       # 产出 VibeUsage-<version>-Windows-Setup.exe + 
 开发调试：
 
 ```powershell
-node scripts/vendor-cli.mjs    # 准备内置 CLI（一次即可）
+node scripts/check-version.mjs # 确认已内置的受测 CLI，不要在验收中替换为 npm latest
 pnpm tauri dev
 ```
 
@@ -65,8 +85,14 @@ pnpm tauri dev
 
 ```bash
 pnpm test                # 前端单测（formatters/aggregate/modelFamilies，与 Swift 实现对拍）
-cargo test --workspace   # Rust 单测（config/codex 配额/claude 配额/statusline hook/托盘字体渲染）
+powershell -NoProfile -File scripts/cargo-windows.ps1 test --workspace   # Rust 单测（配置迁移、产品发现/选择、配额桥、凭据边界等）
+powershell -NoProfile -File scripts/cargo-windows.ps1 test --workspace --features external-test-diagnostics # 外测更新隔离
+node scripts/test-vendored-cli.mjs --tests-from ../vibe-usage # 对实际内置 CLI 运行同版本的上游测试
 ```
+
+最后一项需要完整的 CLI Git checkout，其版本必须与内置快照一致（来源记录在 `src-tauri/resources/cli/.vibe-usage-source.json`）；npm 包没有 `test/` 目录，直接在里面运行 `node --test` 得到 0 项不能作为验收通过。
+
+当前“活跃时长”按会话累加 `activeSeconds`，并行会话会重复计时，Codex 单轮内也没有空闲截断；它不是人的实际使用时长。此轮不改变共享统计算法，跨端口径与历史数据处理另行评审。
 
 ## 架构
 
@@ -78,8 +104,10 @@ Rust (Tauri 2)
   ├─ api_client          GET /api/usage、设备链接 code/poll
   ├─ sync_engine         spawn node <内置CLI> sync（120s 超时、CREATE_NO_WINDOW）
   ├─ scheduler           30 分钟定时同步 + 24h 更新检查
-  ├─ rate_limit          Codex rollout JSONL / Claude statusline 捕获文件
-  ├─ statusline_hook     写入 ~/.claude/settings.json 的 Node 包装器（自愈/备份/还原）
+  ├─ rate_limits         Codex / Claude 原生读取 + Kimi / ZCode / Grok typed CLI bridge
+  ├─ quota_product       只读本地发现 + 两项选择策略（Cursor 待接入）
+  ├─ zcode_credentials   Windows Credential Manager 安全存储
+  ├─ statusline_hook     仅安全退休旧版本能够证明归属的 Claude hook
   └─ updater             latest.json + SHA-256 校验 + NSIS 静默升级
 内置资源
   ├─ resources/cli       vendored @vibe-cafe/vibe-usage（含 Windows 补丁, scripts/vendor-cli.mjs）

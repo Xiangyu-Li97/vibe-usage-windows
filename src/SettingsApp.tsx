@@ -3,13 +3,27 @@
 // equivalent (no Dock) and is intentionally omitted.
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2 } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { api, onDeviceLink, onSyncState } from "./lib/api";
+import { AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { api, onDeviceLink, onSettingsShown, onSyncState } from "./lib/api";
 import { formatInvokeError } from "./lib/errors";
 import { extraRootsLoadPatch } from "./lib/extraRoots";
-import { AppSettings, AppStatus, ExtraRoots, SyncState } from "./lib/types";
+import {
+  AppSettings,
+  AppStatus,
+  ExtraRoots,
+  QuotaProduct,
+  RateLimitProvider,
+  SyncState,
+  ZCodeCredentialStatus,
+  ZCodeQuotaRegion,
+} from "./lib/types";
 import { formatRelativeTime } from "./lib/formatters";
+import {
+  MAX_QUOTA_SELECTION,
+  isZCodeConfigured,
+  quotaProductStatusText,
+} from "./lib/quotaProducts";
 
 export function SettingsApp() {
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -21,25 +35,46 @@ export function SettingsApp() {
   const [relinkUserCode, setRelinkUserCode] = useState<string | null>(null);
   const [relinkError, setRelinkError] = useState<string | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
+  const [quotaProducts, setQuotaProducts] = useState<QuotaProduct[]>([]);
+  const [quotaBusy, setQuotaBusy] = useState(false);
+  const [zCodeStatus, setZCodeStatus] = useState<ZCodeCredentialStatus>({
+    bigModelConfigured: false,
+    zAiConfigured: false,
+  });
+  const [zCodeApiKey, setZCodeApiKey] = useState("");
+  const [zCodeMessage, setZCodeMessage] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [diagnosticMessage, setDiagnosticMessage] = useState<string | null>(null);
   const [extraRoots, setExtraRoots] = useState<ExtraRoots>({});
   const [extraRootsBusy, setExtraRootsBusy] = useState(false);
   const [extraRootsError, setExtraRootsError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    const [nextStatus, nextSettings, nextSyncState, nextAutoStart, nextExtraRoots] = await Promise.allSettled([
+    // Defaults are initialized by the backend before any window starts.
+    const discovered = await api.getQuotaProducts().catch(() => null);
+    const [
+      nextStatus,
+      nextSettings,
+      nextSyncState,
+      nextAutoStart,
+      nextExtraRoots,
+      nextZCodeStatus,
+    ] = await Promise.allSettled([
       api.getAppStatus(),
       api.getSettings(),
       api.getSyncState(),
       api.getLaunchAtLogin(),
       api.getExtraRoots(),
+      api.getZCodeCredentialStatus(),
     ]);
 
+    if (discovered) setQuotaProducts(discovered);
     if (nextStatus.status === "fulfilled") setStatus(nextStatus.value);
     if (nextSettings.status === "fulfilled") setSettings(nextSettings.value);
     if (nextSyncState.status === "fulfilled") setSyncState(nextSyncState.value);
     if (nextAutoStart.status === "fulfilled") setAutoStart(nextAutoStart.value);
+    if (nextZCodeStatus.status === "fulfilled") setZCodeStatus(nextZCodeStatus.value);
     const extraPatch = extraRootsLoadPatch(nextExtraRoots);
     if (extraPatch.extraRoots !== undefined) {
       setExtraRoots(extraPatch.extraRoots);
@@ -53,6 +88,9 @@ export function SettingsApp() {
     void reload();
     const subs = [
       onSyncState(setSyncState),
+      onSettingsShown(() => {
+        void reload();
+      }),
       onDeviceLink(async (e) => {
         setIsRelinking(false);
         setRelinkUserCode(null);
@@ -105,26 +143,89 @@ export function SettingsApp() {
     void api.setSettings(next);
   };
 
-  const toggleCodexQuota = (enabled: boolean) => {
+  const toggleQuotaProduct = async (provider: RateLimitProvider, selected: boolean) => {
     setQuotaError(null);
-    patchSettings({ codexRateLimitEnabled: enabled });
+    setQuotaBusy(true);
+    try {
+      await api.setQuotaProductSelected(provider, selected);
+      setSettings(await api.getSettings());
+    } catch (err) {
+      setQuotaError(formatInvokeError(err));
+    } finally {
+      setQuotaBusy(false);
+    }
   };
 
-  const toggleClaudeQuota = async (enabled: boolean) => {
-    if (!settings) return;
+  const rediscoverQuotaProducts = async () => {
     setQuotaError(null);
-    if (!enabled) {
-      patchSettings({ claudeRateLimitEnabled: false });
-      return;
-    }
-
-    setSettings({ ...settings, claudeRateLimitEnabled: true });
+    setQuotaBusy(true);
     try {
-      await api.enableClaudeRateLimit();
-      await reload();
+      setQuotaProducts(await api.getQuotaProducts());
+      setSettings(await api.getSettings());
     } catch (err) {
-      setSettings({ ...settings, claudeRateLimitEnabled: false });
       setQuotaError(formatInvokeError(err));
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const setZCodeRegion = async (region: ZCodeQuotaRegion) => {
+    setZCodeApiKey("");
+    setZCodeMessage(null);
+    setQuotaError(null);
+    setQuotaBusy(true);
+    try {
+      await api.setZCodeQuotaRegion(region);
+      const [nextSettings, nextStatus] = await Promise.all([
+        api.getSettings(),
+        api.getZCodeCredentialStatus(),
+      ]);
+      setSettings(nextSettings);
+      setZCodeStatus(nextStatus);
+    } catch (err) {
+      setQuotaError(formatInvokeError(err));
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const saveZCodeApiKey = async () => {
+    if (!settings || !zCodeApiKey.trim()) return;
+    setQuotaBusy(true);
+    setQuotaError(null);
+    setZCodeMessage(null);
+    try {
+      await api.setZCodeApiKey(settings.zCodeQuotaRegion, zCodeApiKey.trim());
+      setZCodeApiKey("");
+      setZCodeStatus(await api.getZCodeCredentialStatus());
+      setSettings(await api.getSettings());
+      setZCodeMessage("已安全保存到 Windows 凭据管理器");
+    } catch (err) {
+      setQuotaError(formatInvokeError(err));
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const removeZCodeApiKey = async () => {
+    if (!settings) return;
+    setQuotaBusy(true);
+    setQuotaError(null);
+    setZCodeMessage(null);
+    try {
+      await api.setZCodeApiKey(settings.zCodeQuotaRegion, null);
+      setZCodeApiKey("");
+      const [nextSettings, nextStatus] = await Promise.all([
+        api.getSettings(),
+        api.getZCodeCredentialStatus(),
+      ]);
+      setSettings(nextSettings);
+      setZCodeStatus(nextStatus);
+      setZCodeMessage("已移除当前区域的 API Key");
+    } catch (err) {
+      setQuotaError(formatInvokeError(err));
+    } finally {
+      setQuotaBusy(false);
     }
   };
 
@@ -146,6 +247,22 @@ export function SettingsApp() {
       setUpdateMessage(info ? `发现新版本 ${info.version}` : "已是最新版本");
     } catch (err) {
       setUpdateMessage(`检查失败: ${formatInvokeError(err)}`);
+    }
+  };
+
+  const exportDiagnostics = async () => {
+    setDiagnosticMessage(null);
+    const destination = await save({
+      title: "导出测试诊断日志",
+      defaultPath: `vibe-usage-diagnostics-${Math.floor(Date.now() / 1000)}.jsonl`,
+      filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
+    });
+    if (!destination) return;
+    try {
+      await api.exportTestDiagnostics(destination);
+      setDiagnosticMessage("诊断日志已导出");
+    } catch (err) {
+      setDiagnosticMessage(`导出失败：${formatInvokeError(err)}`);
     }
   };
 
@@ -275,19 +392,93 @@ export function SettingsApp() {
         </Section>
 
         {/* 订阅配额 */}
-        <Section title="订阅配额">
-          <Row label="显示 Codex 订阅配额">
-            <Toggle
-              checked={settings?.codexRateLimitEnabled ?? true}
-              onChange={toggleCodexQuota}
-            />
-          </Row>
-          <Row label="显示 Claude 订阅配额">
-            <Toggle
-              checked={settings?.claudeRateLimitEnabled ?? false}
-              onChange={(v) => void toggleClaudeQuota(v)}
-            />
-          </Row>
+        <Section
+          title={`订阅配额（${settings?.selectedQuotaProductIds.length ?? 0}/${MAX_QUOTA_SELECTION}）`}
+          footer="自动检测只决定首次推荐；即使产品位于非标准目录，也可手动选择。选择第三项会替换最早选择的一项。"
+        >
+          {quotaProducts.map((product) => {
+            const selected = settings?.selectedQuotaProductIds.includes(product.provider) ?? false;
+            return (
+              <Row key={product.provider} label={product.displayName}>
+                <div className="flex items-center gap-3">
+                  <span className="max-w-[190px] truncate text-[11px] text-neutral-500">
+                    {quotaProductStatusText(
+                      product,
+                      zCodeStatus,
+                      settings?.zCodeQuotaRegion ?? "bigModel",
+                    )}
+                  </span>
+                  <Toggle
+                    checked={selected}
+                    disabled={quotaBusy}
+                    onChange={(value) => void toggleQuotaProduct(product.provider, value)}
+                  />
+                </div>
+              </Row>
+            );
+          })}
+          <div className="flex justify-end px-3 py-2">
+            <SmallButton disabled={quotaBusy} onClick={() => void rediscoverQuotaProducts()}>
+              <span className="flex items-center gap-1.5">
+                <RefreshCw size={11} /> 重新检测
+              </span>
+            </SmallButton>
+          </div>
+
+          <div className="flex flex-col gap-2.5 px-3 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[13px]">ZCode Coding Plan</span>
+                <span className="text-[10.5px] leading-relaxed text-neutral-500">
+                  仅使用你明确提供的区域 Key，不读取 ZCode 登录凭据，也不会向另一区域试发。
+                </span>
+              </div>
+              <select
+                aria-label="ZCode 账号区域"
+                value={settings?.zCodeQuotaRegion ?? "bigModel"}
+                disabled={!settings || quotaBusy}
+                onChange={(event) => void setZCodeRegion(event.target.value as ZCodeQuotaRegion)}
+                className="rounded bg-[#48484A] px-2 py-1 text-xs text-white outline-none"
+              >
+                <option value="bigModel">BigModel 国内</option>
+                <option value="zAI">Z.ai 海外</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={zCodeApiKey}
+                disabled={!settings || quotaBusy}
+                autoComplete="off"
+                placeholder={
+                  isZCodeConfigured(
+                    zCodeStatus,
+                    settings?.zCodeQuotaRegion ?? "bigModel",
+                  )
+                    ? "已配置（输入新 Key 可替换）"
+                    : "输入 Coding Plan API Key"
+                }
+                onChange={(event) => setZCodeApiKey(event.target.value)}
+                className="min-w-0 grow rounded-md border border-white/10 bg-[#1C1C1E] px-2.5 py-1.5 font-mono text-xs text-white outline-none focus:border-white/25 disabled:opacity-50"
+              />
+              <SmallButton
+                disabled={!zCodeApiKey.trim() || quotaBusy}
+                onClick={() => void saveZCodeApiKey()}
+              >
+                保存
+              </SmallButton>
+              {isZCodeConfigured(zCodeStatus, settings?.zCodeQuotaRegion ?? "bigModel") && (
+                <button
+                  disabled={quotaBusy}
+                  className="shrink-0 text-xs text-red-400 disabled:opacity-50"
+                  onClick={() => void removeZCodeApiKey()}
+                >
+                  移除
+                </button>
+              )}
+            </div>
+            {zCodeMessage && <span className="text-[11px] text-emerald-400">{zCodeMessage}</span>}
+          </div>
           {quotaError && (
             <div className="px-3 py-2 text-xs text-red-400" style={{ borderColor: "#3A3A3C" }}>
               {quotaError}
@@ -318,6 +509,24 @@ export function SettingsApp() {
           </Row>
         </Section>
 
+        {status?.testDiagnosticsAvailable && (
+          <Section
+            title="测试诊断"
+            footer="仅测试构建可用；只包含脱敏错误码、Provider、版本和系统架构，不包含路径、账号、Key、Token、Cookie 或响应正文。"
+          >
+            <Row label="外测日志">
+              <div className="flex items-center gap-2">
+                {diagnosticMessage && (
+                  <span className="max-w-[190px] truncate text-[11px] text-neutral-400">
+                    {diagnosticMessage}
+                  </span>
+                )}
+                <SmallButton onClick={() => void exportDiagnostics()}>导出…</SmallButton>
+              </div>
+            </Row>
+          </Section>
+        )}
+
         {/* 关于 */}
         <Section title="关于">
           <Row label="版本">
@@ -332,7 +541,11 @@ export function SettingsApp() {
                   {updateMessage}
                 </span>
               )}
-              <SmallButton onClick={() => void checkUpdate()}>检查更新</SmallButton>
+              {status?.updatesAvailable ? (
+                <SmallButton onClick={() => void checkUpdate()}>检查更新</SmallButton>
+              ) : status ? (
+                <span className="text-xs text-neutral-400">外测版不检查更新</span>
+              ) : null}
             </div>
           </Row>
         </Section>
@@ -410,13 +623,22 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       role="switch"
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-150"
+      className="relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-150 disabled:opacity-50"
       style={{ background: checked ? "#34C759" : "#48484A" }}
     >
       <span

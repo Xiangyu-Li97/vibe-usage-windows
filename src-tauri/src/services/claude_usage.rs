@@ -106,8 +106,7 @@ async fn run_probe(candidate: &Path) -> Result<ProviderRateLimit, String> {
     }
     crate::process_utils::hide_tokio_command_window(&mut command);
 
-    let mut child = command
-        .spawn()
+    let (mut child, _process_guard) = crate::process_lifecycle::spawn(&mut command)
         .map_err(|e| format!("无法启动 Claude: {e}"))?;
     let stdin = child.stdin.take().ok_or("无法连接 Claude stdin")?;
     let stdout = child.stdout.take().ok_or("无法连接 Claude stdout")?;
@@ -208,6 +207,7 @@ fn parse_payload(root: &Value, now: f64) -> Option<ProviderRateLimit> {
     }
     Some(ProviderRateLimit {
         provider: RateLimitProvider::ClaudeCode,
+        meters: Vec::new(),
         five_hour,
         seven_day,
         plan_label: root
@@ -216,6 +216,7 @@ fn parse_payload(root: &Value, now: f64) -> Option<ProviderRateLimit> {
             .filter(|s| !s.is_empty())
             .map(capitalize),
         data_as_of: Some(now),
+        fetched_at: Some(now),
         five_hour_not_enforced: false,
         reset_credits_count: None,
         status: RateLimitStatus::Ok,
@@ -267,10 +268,12 @@ fn cached_snapshot_from(path: &Path, now: f64) -> Option<ProviderRateLimit> {
     }
     Some(ProviderRateLimit {
         provider: RateLimitProvider::ClaudeCode,
+        meters: Vec::new(),
         five_hour,
         seven_day,
         plan_label: None,
         data_as_of: Some(fetched_at),
+        fetched_at: Some(fetched_at),
         five_hour_not_enforced: false,
         reset_credits_count: None,
         status: RateLimitStatus::Ok,

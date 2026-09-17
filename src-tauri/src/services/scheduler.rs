@@ -38,6 +38,9 @@ pub fn stop(app: &AppHandle) {
 
 /// Background update poll (startup + every 24h).
 pub fn start_update_checks(app: AppHandle) {
+    if !crate::services::updater::available() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         loop {
             let _ = crate::services::updater::check(&app).await;
