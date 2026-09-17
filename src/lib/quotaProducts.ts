@@ -6,8 +6,6 @@ import {
   ZCodeQuotaRegion,
 } from "./types";
 
-export const MAX_QUOTA_SELECTION = 2;
-
 export function providerLabel(provider: RateLimitProvider, products: QuotaProduct[]): string {
   return products.find((product) => product.provider === provider)?.displayName ?? provider;
 }
@@ -47,19 +45,36 @@ export function quotaProductStatusText(
   return `${detected}${configured ? " · API Key 已配置" : ""} · ${reading}`;
 }
 
-/** Keep selection order stable. All selected cards appear once one has an
- * actionable state; an explicitly selected Cursor is itself actionable. */
-export function visibleQuotaProviders(
-  selected: RateLimitProvider[],
-  snapshots: ProviderRateLimit[],
-  refreshing: boolean,
-): RateLimitProvider[] {
-  const hasContent = selected.some((provider) => {
-    if (provider === "cursor" || refreshing) return true;
-    return (
-      (snapshots.find((snapshot) => snapshot.provider === provider)?.status.kind ?? "noData") !==
-      "noData"
-    );
-  });
-  return hasContent ? selected : [];
+/**
+ * Settings rows show the one fact the row can act on instead of the full
+ * selector status line. Mirrors SettingsView.compactQuotaStatus: wording this
+ * map does not recognize passes through untouched instead of being invented.
+ */
+export function compactQuotaStatus(status: string): string {
+  if (status.includes("已配置")) return "已配置";
+  if (status.includes("需配置") || status.includes("未检测到")) return "待配置";
+  return status;
+}
+
+/**
+ * Status line for an enabled product whose card has no meters to draw. Only
+ * ever states what the data channel actually reported: the live Codex
+ * endpoint's own verdict (`emptyReason`), local detection, or — when neither
+ * exists — that nothing has been read yet. Never invents 「已用满」 for a source
+ * that cannot tell, and never says 「未检测到」 while a refresh is still in flight.
+ */
+export function quotaEmptyStateText(
+  snapshot: ProviderRateLimit,
+  isDetected: boolean,
+  isRefreshing = false,
+): string {
+  if (isRefreshing) return "正在读取订阅配额…";
+  switch (snapshot.emptyReason) {
+    case "limitReached":
+      return "本期订阅配额已用满 · 等待额度重置";
+    case "noWindow":
+      return "当前没有生效的额度窗口";
+    default:
+      return isDetected ? "暂未读取到订阅配额数据" : "未检测到本机安装或登录";
+  }
 }

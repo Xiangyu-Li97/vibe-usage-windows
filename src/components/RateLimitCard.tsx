@@ -1,8 +1,8 @@
 // Subscription quota selector and provider-neutral cards.
 
 import { useState } from "react";
-import { Check, ChevronDown, Info, RefreshCw, SquareTerminal, Sparkles } from "lucide-react";
-import { useAppState } from "../state/AppStateContext";
+import { Check, ChevronDown, Info, RefreshCw } from "lucide-react";
+import { AppStateValue, useAppState } from "../state/AppStateContext";
 import {
   ProviderRateLimit,
   RateLimitMeter,
@@ -10,20 +10,25 @@ import {
   RateLimitWindow,
 } from "../lib/types";
 import {
-  MAX_QUOTA_SELECTION,
   providerLabel,
+  quotaEmptyStateText,
   quotaProductStatusText,
-  visibleQuotaProviders,
 } from "../lib/quotaProducts";
 import { elapsedPercent, utilizationColor } from "../lib/aggregate";
 import { formatPercent, formatTimeUntil } from "../lib/formatters";
-import codexIcon from "../assets/codex-icon.png";
-import claudeIcon from "../assets/claude-icon.png";
+import { ProviderIcon } from "./ProviderIcon";
+
+/**
+ * Fixed card width. Two cards plus the 8 px gap fill the panel's content box
+ * exactly ((520 − 2×16 padding − 8) / 2), so the familiar two-card row is
+ * unchanged; a third product scrolls instead of squeezing every card narrower
+ * than its meters and labels can render.
+ */
+const CARD_WIDTH = 240;
 
 export function RateLimitCards() {
   const state = useAppState();
   const selected = state.settings.selectedQuotaProductIds;
-  const visible = visibleQuotaProviders(selected, state.rateLimits, state.isRefreshingRateLimits);
 
   const snapshot = (provider: RateLimitProvider): ProviderRateLimit =>
     state.rateLimits.find((item) => item.provider === provider) ?? {
@@ -41,16 +46,20 @@ export function RateLimitCards() {
         <ProductSelector />
       </div>
 
-      {visible.length === 2 ? (
-        <div className="grid grid-cols-2 items-stretch gap-2">
-          {visible.map((provider) => (
-            <ProviderCard key={provider} snapshot={snapshot(provider)} />
+      {/* One card per enabled product, in selection order, inside a horizontal
+          scroller. An enabled product must always show its own state: a
+          collapsed section reads as "this feature is off" precisely when the
+          user wants to know why nothing is shown. */}
+      {selected.length === 0 ? (
+        <NoticeBar />
+      ) : (
+        <div className="no-scrollbar flex items-stretch gap-2 overflow-x-auto">
+          {selected.map((provider) => (
+            <div key={provider} className="shrink-0" style={{ width: CARD_WIDTH }}>
+              <ProviderCard snapshot={snapshot(provider)} />
+            </div>
           ))}
         </div>
-      ) : visible.length === 1 ? (
-        <ProviderCard snapshot={snapshot(visible[0])} />
-      ) : (
-        <NoticeBar selectedCount={selected.length} />
       )}
 
       {state.quotaSelectionError && (
@@ -74,7 +83,7 @@ function ProductSelector() {
         style={{ color: "#B8B8B8", background: "#1C1C1C", border: "1px solid #333333" }}
         onClick={() => setOpen((value) => !value)}
       >
-        选择 {selected.length}/{MAX_QUOTA_SELECTION}
+        选择 {selected.length}
         <ChevronDown size={11} />
       </button>
 
@@ -125,26 +134,17 @@ function ProductSelector() {
             <RefreshCw size={12} />
             重新检测本机产品
           </button>
-          {selected.length === MAX_QUOTA_SELECTION && (
-            <div className="px-2.5 pb-1 pt-0.5 text-[9.5px] text-neutral-600">
-              选择新产品会替换最早选择的一项
-            </div>
-          )}
         </div>
       )}
     </div>
   );
 }
 
-function NoticeBar({ selectedCount }: { selectedCount: number }) {
+function NoticeBar() {
   return (
     <div className="flex items-center gap-1.5" style={{ color: "#666666" }}>
       <Info size={10} />
-      <span className="text-[11px]">
-        {selectedCount === 0
-          ? "自动识别本机产品；请选择最多两个进行显示"
-          : "已选择的产品暂无可用订阅配额"}
-      </span>
+      <span className="text-[11px]">自动识别本机产品；请选择要显示的产品</span>
     </div>
   );
 }
@@ -193,7 +193,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
   const extraMeterCount = Math.max(0, rows.length - visibleRows.length);
 
   return (
-    <div className="flex min-w-0 flex-col gap-2.5 rounded-card border border-card-border bg-card px-3 py-[11px]">
+    <div className="flex h-full min-w-0 flex-col gap-2.5 rounded-card border border-card-border bg-card px-3 py-[11px]">
       <div className="flex items-center gap-1.5">
         <ProviderIcon provider={snapshot.provider} />
         <span className="truncate text-[13px] font-semibold text-white">
@@ -218,8 +218,12 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
           setHoveredLabel={setHoveredLabel}
         />
       )}
-      {(snapshot.status.kind === "disabled" || snapshot.status.kind === "noData") && (
-        <NoDataContent provider={snapshot.provider} />
+      {snapshot.status.kind === "disabled" && snapshot.provider !== "cursor" && (
+        <MessageContent text="订阅配额未启用" />
+      )}
+      {(snapshot.status.kind === "noData" ||
+        (snapshot.status.kind === "disabled" && snapshot.provider === "cursor")) && (
+        <QuietText text={emptyStateText(snapshot, state)} />
       )}
       {snapshot.status.kind === "unauthorized" && (
         <MessageContent text={unauthorizedText(snapshot.provider, state.settings.zCodeQuotaRegion, providerLabel(snapshot.provider, state.quotaProducts))} />
@@ -243,17 +247,22 @@ function unauthorizedText(provider: RateLimitProvider, region: "bigModel" | "zAI
   return `请打开 ${label} 使用一次后重试`;
 }
 
-function NoDataContent({ provider }: { provider: RateLimitProvider }) {
-  const state = useAppState();
-  let text = "未检测到可用订阅配额";
-  if (state.isRefreshingRateLimits) {
-    text = "正在读取订阅配额…";
-  } else if (provider === "cursor") {
+/** Local discovery result only — never a credential or network read. It
+ *  separates "installed but nothing to show yet" from "not on this machine". */
+function emptyStateText(snapshot: ProviderRateLimit, state: AppStateValue): string {
+  if (state.isRefreshingRateLimits) return "正在读取订阅配额…";
+  if (snapshot.provider === "cursor") {
     const detected = state.quotaProducts.find((item) => item.provider === "cursor")?.isDetected;
-    text = detected
+    return detected
       ? "已识别 Cursor · 等待官方配额接口"
       : "未检测到 Cursor · 等待官方配额接口";
   }
+  const detected =
+    state.quotaProducts.find((item) => item.provider === snapshot.provider)?.isDetected === true;
+  return quotaEmptyStateText(snapshot, detected);
+}
+
+function QuietText({ text }: { text: string }) {
   return <span className="text-[11px] leading-snug text-neutral-500">{text}</span>;
 }
 
@@ -433,26 +442,5 @@ function ProgressBar({
         style={{ width: `${percent}%`, background: fill ?? utilizationColor(value) }}
       />
     </div>
-  );
-}
-
-function ProviderIcon({ provider }: { provider: RateLimitProvider }) {
-  const [failed, setFailed] = useState(false);
-  if (!failed && (provider === "codex" || provider === "claudeCode")) {
-    return (
-      <img
-        src={provider === "codex" ? codexIcon : claudeIcon}
-        width={14}
-        height={14}
-        className="shrink-0"
-        onError={() => setFailed(true)}
-        alt=""
-      />
-    );
-  }
-  return provider === "codex" ? (
-    <SquareTerminal size={13} color="#999999" />
-  ) : (
-    <Sparkles size={13} color="#999999" />
   );
 }
