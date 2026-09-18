@@ -1,6 +1,7 @@
 // Subscription quota selector and provider-neutral cards.
 
-import { useState } from "react";
+import { ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Info, RefreshCw } from "lucide-react";
 import { AppStateValue, useAppState } from "../state/AppStateContext";
 import {
@@ -151,6 +152,10 @@ function NoticeBar() {
 
 const ROW_HEIGHT = 16;
 const ROW_SPACING = 6;
+/** Offset between the hovered row and its floating tooltip, plus the minimum
+ *  distance kept from the window edge when the tooltip has to be nudged back. */
+const TOOLTIP_GAP = 6;
+const TOOLTIP_MARGIN = 8;
 
 type RowItem =
   | { kind: "live"; label: string; window: RateLimitWindow }
@@ -165,7 +170,6 @@ function meterWindow(meter: RateLimitMeter): RateLimitWindow {
 }
 
 function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
-  const [hoveredLabel, setHoveredLabel] = useState<string | null>(null);
   const state = useAppState();
   const plan = snapshot.planLabel?.toLowerCase();
   const expectsFiveHour =
@@ -211,13 +215,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
         )}
       </div>
 
-      {snapshot.status.kind === "ok" && (
-        <QuotaRows
-          rows={visibleRows}
-          hoveredLabel={hoveredLabel}
-          setHoveredLabel={setHoveredLabel}
-        />
-      )}
+      {snapshot.status.kind === "ok" && <QuotaRows rows={visibleRows} />}
       {snapshot.status.kind === "disabled" && snapshot.provider !== "cursor" && (
         <MessageContent text="订阅配额未启用" />
       )}
@@ -266,17 +264,9 @@ function QuietText({ text }: { text: string }) {
   return <span className="text-[11px] leading-snug text-neutral-500">{text}</span>;
 }
 
-function QuotaRows({
-  rows,
-  hoveredLabel,
-  setHoveredLabel,
-}: {
-  rows: RowItem[];
-  hoveredLabel: string | null;
-  setHoveredLabel: (label: string | null) => void;
-}) {
-  const hoveredIndex = rows.findIndex((row) => row.label === hoveredLabel);
-  const hoveredRow = hoveredIndex >= 0 ? rows[hoveredIndex] : null;
+function QuotaRows({ rows }: { rows: RowItem[] }) {
+  const [hovered, setHovered] = useState<{ index: number; anchor: HTMLElement } | null>(null);
+  const hoveredRow = hovered ? rows[hovered.index] : null;
   const hoveredWindow = hoveredRow?.kind === "live" ? hoveredRow.window : null;
 
   return (
@@ -287,7 +277,7 @@ function QuotaRows({
             key={`${row.label}-${index}`}
             label={row.label}
             window={row.window}
-            onHover={(hovering) => setHoveredLabel(hovering ? row.label : null)}
+            onHover={(anchor) => setHovered(anchor ? { index, anchor } : null)}
           />
         ) : (
           <EmptyQuotaRow key={`${row.label}-${index}`} label={row.label} message={row.message} />
@@ -295,13 +285,10 @@ function QuotaRows({
       )}
       {rows.length === 0 && <span className="text-[11px] text-neutral-500">暂无订阅配额数据</span>}
 
-      {hoveredWindow && hoveredIndex >= 0 && (
-        <div
-          className="pointer-events-none absolute left-0 z-40"
-          style={{ top: (hoveredIndex + 1) * ROW_HEIGHT + hoveredIndex * ROW_SPACING + 6 }}
-        >
-          <Tooltip label={rows[hoveredIndex].label} window={hoveredWindow} />
-        </div>
+      {hovered && hoveredRow && hoveredWindow && (
+        <TooltipLayer anchor={hovered.anchor}>
+          <Tooltip label={hoveredRow.label} window={hoveredWindow} />
+        </TooltipLayer>
       )}
     </div>
   );
@@ -314,11 +301,13 @@ function QuotaRow({
 }: {
   label: string;
   window: RateLimitWindow;
-  onHover: (hovering: boolean) => void;
+  /** Anchor is the whole row, so the tooltip lines up with the label column. */
+  onHover: (anchor: HTMLElement | null) => void;
 }) {
   const elapsed = elapsedPercent(quotaWindow);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="flex items-center gap-1.5" style={{ height: ROW_HEIGHT }}>
+    <div ref={rowRef} className="flex items-center gap-1.5" style={{ height: ROW_HEIGHT }}>
       <span
         className="w-10 shrink-0 truncate font-mono text-[11px] font-medium"
         style={{ color: "#999999" }}
@@ -328,8 +317,8 @@ function QuotaRow({
       </span>
       <div
         className="flex min-w-0 grow flex-col justify-center gap-0.5"
-        onMouseEnter={() => onHover(true)}
-        onMouseLeave={() => onHover(false)}
+        onMouseEnter={() => rowRef.current && onHover(rowRef.current)}
+        onMouseLeave={() => onHover(null)}
       >
         <ProgressBar value={quotaWindow.utilization} height={6} />
         {elapsed != null && (
@@ -385,6 +374,64 @@ function Tooltip({ label, window: quotaWindow }: { label: string; window: RateLi
             : "重置时间未知"}
       </span>
     </div>
+  );
+}
+
+/**
+ * Renders the quota tooltip into `document.body` as a fixed-position layer.
+ *
+ * The cards sit inside a horizontal scroller, and a scroll container clips all
+ * of its descendants (`overflow-x: auto` also forces `overflow-y: auto`), so an
+ * in-card tooltip on the last row gets cut off at the card edge. A body portal
+ * is outside every ancestor clip and stacking context, so the tooltip always
+ * paints complete and on top, at any scroll offset. It follows the row when the
+ * scroller or the panel moves, and flips above the row near the window bottom.
+ */
+function TooltipLayer({ anchor, children }: { anchor: HTMLElement; children: ReactNode }) {
+  const layerRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const place = () => {
+      const layer = layerRef.current;
+      if (!layer) return;
+      const row = anchor.getBoundingClientRect();
+      const { width, height } = layer.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = document.documentElement.clientHeight;
+      const maxLeft = Math.max(TOOLTIP_MARGIN, viewportWidth - width - TOOLTIP_MARGIN);
+      const left = Math.min(Math.max(row.left, TOOLTIP_MARGIN), maxLeft);
+      const below = row.bottom + TOOLTIP_GAP;
+      const above = row.top - TOOLTIP_GAP - height;
+      const top =
+        below + height + TOOLTIP_MARGIN <= viewportHeight
+          ? below
+          : above >= TOOLTIP_MARGIN
+            ? above
+            : Math.max(TOOLTIP_MARGIN, viewportHeight - height - TOOLTIP_MARGIN);
+      setPos((current) =>
+        current && current.left === left && current.top === top ? current : { left, top },
+      );
+    };
+    place();
+    // Capture phase so the quota scroller (not only the window) is covered.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchor]);
+
+  return createPortal(
+    <div
+      ref={layerRef}
+      className="pointer-events-none fixed z-[9999]"
+      style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 
