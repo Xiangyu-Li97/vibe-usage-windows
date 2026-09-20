@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalQuotaMeters,
   compactQuotaStatus,
   isZCodeConfigured,
   quotaEmptyStateText,
@@ -59,6 +60,23 @@ describe("quota product presentation", () => {
     expect(compactQuotaStatus("已检测 · 需配置 API Key")).toBe("待配置");
     expect(compactQuotaStatus("未检测到 · 需配置 API Key")).toBe("待配置");
     expect(compactQuotaStatus("已检测 · 待接入")).toBe("已检测 · 待接入");
+  });
+});
+
+describe("quota meter layout", () => {
+  it("puts generic periods first from shortest to longest", () => {
+    const ordered = canonicalQuotaMeters([
+      { id: "mcp", label: "MCP", utilization: 4, windowDuration: 30 * 86_400 },
+      { id: "weekly", label: "Weekly", utilization: 30 },
+      { id: "sonnet", label: "Sonnet", utilization: 40, windowDuration: 7 * 86_400 },
+      { id: "five-hour", label: "5h", utilization: 10, windowDuration: 5 * 3_600 },
+      { id: "extra", label: "额外", utilization: 50 },
+    ]);
+
+    expect(ordered.map((meter) => meter.label)).toEqual([
+      "5h", "7d", "MCP", "Sonnet", "额外",
+    ]);
+    expect(ordered[1].windowDuration).toBe(7 * 86_400);
   });
 });
 

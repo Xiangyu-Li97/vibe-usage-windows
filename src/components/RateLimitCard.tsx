@@ -11,6 +11,7 @@ import {
   RateLimitWindow,
 } from "../lib/types";
 import {
+  canonicalQuotaMeters,
   providerLabel,
   quotaEmptyStateText,
   quotaProductStatusText,
@@ -176,7 +177,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderRateLimit }) {
     snapshot.provider === "codex" &&
     (plan === "plus" || plan === "pro" || plan === "prolite" || plan === "business");
 
-  const rows: RowItem[] = (snapshot.meters ?? []).map((meter) => ({
+  const rows: RowItem[] = canonicalQuotaMeters(snapshot.meters ?? []).map((meter) => ({
     kind: "live",
     label: meter.label,
     window: meterWindow(meter),
