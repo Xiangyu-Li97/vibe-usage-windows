@@ -42,23 +42,23 @@ export function RateLimitCards() {
   });
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
-  const [carousel, setCarousel] = useState({ firstVisible: 0, canScrollLeft: false, canScrollRight: false });
+  const [carousel, setCarousel] = useState({
+    hasOverflow: false,
+    canScrollLeft: false,
+    canScrollRight: false,
+  });
 
   const syncCarousel = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
     const scrollLeft = Math.min(maxScrollLeft, Math.max(0, scroller.scrollLeft));
-    const firstVisible = Math.min(
-      Math.max(0, selected.length - 1),
-      Math.round(scrollLeft / (CARD_WIDTH + CARD_GAP)),
-    );
     setCarousel({
-      firstVisible,
+      hasOverflow: maxScrollLeft > 1,
       canScrollLeft: scrollLeft > 1,
       canScrollRight: scrollLeft < maxScrollLeft - 1,
     });
-  }, [selected.length]);
+  }, []);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -70,11 +70,11 @@ export function RateLimitCards() {
       window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [syncCarousel]);
+  }, [selected.length, syncCarousel]);
 
   const scrollCards = (direction: -1 | 1) => {
     scrollerRef.current?.scrollBy({
-      left: direction * (CARD_WIDTH + CARD_GAP),
+      left: direction * 2 * (CARD_WIDTH + CARD_GAP),
       behavior: "smooth",
     });
   };
@@ -146,23 +146,17 @@ export function RateLimitCards() {
           订阅配额
         </span>
         <div className="grow" />
-        {selected.length > 2 && (
+        {carousel.hasOverflow && (
           <div className="flex items-center gap-1" aria-label="切换订阅配额产品">
-            <span
-              aria-live="polite"
-              className="min-w-[48px] text-center text-[10px] text-neutral-500"
-            >
-              {carousel.firstVisible + 1}–{Math.min(carousel.firstVisible + 2, selected.length)} / {selected.length}
-            </span>
             <CarouselButton
-              label="向左查看产品"
+              label="查看上一组产品"
               disabled={!carousel.canScrollLeft}
               onClick={() => scrollCards(-1)}
             >
               <ChevronLeft size={12} />
             </CarouselButton>
             <CarouselButton
-              label="向右查看产品"
+              label="查看下一组产品"
               disabled={!carousel.canScrollRight}
               onClick={() => scrollCards(1)}
             >
