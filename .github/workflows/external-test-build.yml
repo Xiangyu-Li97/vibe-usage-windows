@@ -1,0 +1,66 @@
+name: External Test Build
+
+on:
+  push:
+    branches: ["build/windows-kimi-2x-test"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Kimi quota regression
+        run: pnpm vitest run tests/kimiQuota.test.ts tests/cliQuotaContract.test.ts
+
+      - name: Bundle Node runtime
+        run: node scripts/fetch-node.mjs
+
+      - name: Build external test installer
+        shell: pwsh
+        env:
+          VIBE_USAGE_APP_COMMIT: ${{ github.sha }}
+          VIBE_USAGE_APP_BUILD: ${{ github.run_number }}
+          VIBE_USAGE_BUILD_KIND: external-test
+          TAURI_FEATURES: external-test-diagnostics
+        run: ./scripts/build-tauri-windows.ps1
+
+      - name: Collect installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $installer = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*$version*setup.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found." }
+          Copy-Item $installer.FullName "VibeUsage-$version-Windows-External-Test-UNSIGNED-Setup.exe" -Force
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-kimi-2x-external-test
+          path: VibeUsage-*-Windows-External-Test-UNSIGNED-Setup.exe
+          if-no-files-found: error
