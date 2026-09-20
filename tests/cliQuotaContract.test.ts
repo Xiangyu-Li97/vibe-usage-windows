@@ -17,6 +17,7 @@ test("bundled CLI returns the quota contract without inherited account credentia
       VIBE_USAGE_CONFIG_DIR: join(root, "config"),
       VIBE_USAGE_STATE_DIR: join(root, "state"),
       VIBE_USAGE_QUOTA_CACHE_DIR: join(root, "quota-cache"),
+      KIMI_CODE_HOME: join(root, "kimi-code"),
       KIMI_SHARE_DIR: join(root, "kimi"),
       GROK_HOME: join(root, "grok"),
     };
