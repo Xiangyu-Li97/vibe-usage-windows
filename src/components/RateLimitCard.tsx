@@ -1,8 +1,8 @@
 // Subscription quota selector and provider-neutral cards.
 
-import { ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Info, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Info, RefreshCw } from "lucide-react";
 import { AppStateValue, useAppState } from "../state/AppStateContext";
 import {
   ProviderRateLimit,
@@ -27,10 +27,111 @@ import { ProviderIcon } from "./ProviderIcon";
  * than its meters and labels can render.
  */
 const CARD_WIDTH = 240;
+const CARD_GAP = 8;
 
 export function RateLimitCards() {
   const state = useAppState();
   const selected = state.settings.selectedQuotaProductIds;
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({
+    active: false,
+    pointerId: -1,
+    startX: 0,
+    startScrollLeft: 0,
+    moved: false,
+  });
+  const suppressClickRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
+  const [carousel, setCarousel] = useState({ firstVisible: 0, canScrollLeft: false, canScrollRight: false });
+
+  const syncCarousel = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    const scrollLeft = Math.min(maxScrollLeft, Math.max(0, scroller.scrollLeft));
+    const firstVisible = Math.min(
+      Math.max(0, selected.length - 1),
+      Math.round(scrollLeft / (CARD_WIDTH + CARD_GAP)),
+    );
+    setCarousel({
+      firstVisible,
+      canScrollLeft: scrollLeft > 1,
+      canScrollRight: scrollLeft < maxScrollLeft - 1,
+    });
+  }, [selected.length]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const frame = window.requestAnimationFrame(syncCarousel);
+    const observer = new ResizeObserver(syncCarousel);
+    observer.observe(scroller);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [syncCarousel]);
+
+  const scrollCards = (direction: -1 | 1) => {
+    scrollerRef.current?.scrollBy({
+      left: direction * (CARD_WIDTH + CARD_GAP),
+      behavior: "smooth",
+    });
+  };
+
+  const onCardsWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    const maxScrollLeft = scroller.scrollWidth - scroller.clientWidth;
+    const canMove = delta < 0 ? scroller.scrollLeft > 0 : scroller.scrollLeft < maxScrollLeft;
+    if (!canMove) return;
+    event.preventDefault();
+    scroller.scrollLeft += delta;
+  };
+
+  const onCardsPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button, a, input, select, textarea, [role='button']")) return;
+    const scroller = scrollerRef.current;
+    if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
+    dragRef.current = {
+      active: true,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: scroller.scrollLeft,
+      moved: false,
+    };
+    scroller.setPointerCapture(event.pointerId);
+  };
+
+  const onCardsPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+    const distance = event.clientX - drag.startX;
+    if (!drag.moved && Math.abs(distance) < 4) return;
+    drag.moved = true;
+    setDragging(true);
+    event.preventDefault();
+    event.currentTarget.scrollLeft = drag.startScrollLeft - distance;
+  };
+
+  const finishCardsDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    drag.active = false;
+    setDragging(false);
+    if (drag.moved) {
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    }
+  };
 
   const snapshot = (provider: RateLimitProvider): ProviderRateLimit =>
     state.rateLimits.find((item) => item.provider === provider) ?? {
@@ -45,6 +146,30 @@ export function RateLimitCards() {
           订阅配额
         </span>
         <div className="grow" />
+        {selected.length > 2 && (
+          <div className="flex items-center gap-1" aria-label="切换订阅配额产品">
+            <span
+              aria-live="polite"
+              className="min-w-[48px] text-center text-[10px] text-neutral-500"
+            >
+              {carousel.firstVisible + 1}–{Math.min(carousel.firstVisible + 2, selected.length)} / {selected.length}
+            </span>
+            <CarouselButton
+              label="向左查看产品"
+              disabled={!carousel.canScrollLeft}
+              onClick={() => scrollCards(-1)}
+            >
+              <ChevronLeft size={12} />
+            </CarouselButton>
+            <CarouselButton
+              label="向右查看产品"
+              disabled={!carousel.canScrollRight}
+              onClick={() => scrollCards(1)}
+            >
+              <ChevronRight size={12} />
+            </CarouselButton>
+          </div>
+        )}
         <ProductSelector />
       </div>
 
@@ -55,9 +180,32 @@ export function RateLimitCards() {
       {selected.length === 0 ? (
         <NoticeBar />
       ) : (
-        <div className="no-scrollbar flex items-stretch gap-2 overflow-x-auto">
+        <div
+          ref={scrollerRef}
+          aria-label="已选择的订阅配额产品"
+          className={`no-scrollbar flex items-stretch gap-2 overflow-x-auto ${
+            selected.length > 2 ? (dragging ? "cursor-grabbing" : "cursor-grab") : ""
+          }`}
+          style={{ scrollSnapType: dragging ? "none" : "x mandatory", touchAction: "pan-y" }}
+          onScroll={syncCarousel}
+          onWheel={onCardsWheel}
+          onPointerDown={onCardsPointerDown}
+          onPointerMove={onCardsPointerMove}
+          onPointerUp={finishCardsDrag}
+          onPointerCancel={finishCardsDrag}
+          onClickCapture={(event) => {
+            if (!suppressClickRef.current) return;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onDragStart={(event) => event.preventDefault()}
+        >
           {selected.map((provider) => (
-            <div key={provider} className="shrink-0" style={{ width: CARD_WIDTH }}>
+            <div
+              key={provider}
+              className="shrink-0"
+              style={{ width: CARD_WIDTH, scrollSnapAlign: "start" }}
+            >
               <ProviderCard snapshot={snapshot(provider)} />
             </div>
           ))}
@@ -68,6 +216,30 @@ export function RateLimitCards() {
         <div className="text-[11px] text-red-400">{state.quotaSelectionError}</div>
       )}
     </section>
+  );
+}
+
+function CarouselButton({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/[0.06] text-neutral-400 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-white/50 disabled:cursor-default disabled:opacity-25"
+    >
+      {children}
+    </button>
   );
 }
 
