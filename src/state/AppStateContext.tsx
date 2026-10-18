@@ -58,7 +58,6 @@ export interface AppStateValue {
   isLoadingData: boolean;
   hasLoadedUsageData: boolean;
   usageError: string | null;
-  usageUpdatedAt: number | null;
   isInitialDataLoad: boolean;
   isRefreshingData: boolean;
 
@@ -156,7 +155,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [hasLoadedUsageData, setHasLoadedUsageData] = useState(false);
   const [usageError, setUsageError] = useState<string | null>(null);
-  const [usageUpdatedAt, setUsageUpdatedAt] = useState<number | null>(null);
 
   const [timeRange, setTimeRangeRaw] = useState<TimeRange>("1D");
   const [customRangeFrom, setCustomRangeFrom] = useState<Date>(
@@ -242,7 +240,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const response = await api.fetchUsage(buildQuery());
       if (request !== usageRequest.current) return;
       setUsageError(null);
-      setUsageUpdatedAt(Date.now());
       lastFetchTime.current = Date.now();
       setBuckets(response.buckets);
       setNames(response.names ?? null);
@@ -532,7 +529,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     isLoadingData,
     hasLoadedUsageData,
     usageError,
-    usageUpdatedAt,
     isInitialDataLoad,
     isRefreshingData,
     timeRange,

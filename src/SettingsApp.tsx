@@ -334,7 +334,12 @@ export function SettingsApp() {
                 </span>
               )}
               {relinkError && (
-                <span className="max-w-[280px] text-xs text-red-400">{relinkError}</span>
+                <span
+                  title={relinkError}
+                  className="line-clamp-2 max-w-[280px] break-words text-xs text-red-400"
+                >
+                  {relinkError}
+                </span>
               )}
             </div>
           </Row>
@@ -494,7 +499,14 @@ export function SettingsApp() {
             </div>
           </Disclosure>
 
-          {quotaError && <div className="px-3 py-2 text-xs text-red-400">{quotaError}</div>}
+          {quotaError && (
+            <div
+              title={quotaError}
+              className="line-clamp-2 break-words px-3 py-2 text-xs text-red-400"
+            >
+              {quotaError}
+            </div>
+          )}
         </Section>
 
         {/* 常规 — tray and startup preferences cover the same subject: how the
